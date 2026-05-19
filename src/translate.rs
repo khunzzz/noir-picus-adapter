@@ -6,7 +6,7 @@ use acir::{
     native_types::{Expression, Witness},
 };
 use num_bigint::BigUint;
-use num_traits::Zero;
+use num_traits::{One, Zero};
 use picus_smt::query::{IRConstraint, IRProductTerm, IRTerm};
 
 #[derive(Clone, Debug)]
@@ -53,6 +53,7 @@ pub(crate) fn build_model(
     let mut alt_constraints = Vec::new();
     let mut unsupported_issues = Vec::new();
     let mut dependency_edges = Vec::new();
+    let mut next_aux_wire = max_witness_index(circuit).map_or(1, |index| index as usize + 2);
 
     for (opcode_index, opcode) in circuit.opcodes.iter().enumerate() {
         match opcode {
@@ -66,11 +67,26 @@ pub(crate) fn build_model(
                 }
             }
             Opcode::BlackBoxFuncCall(black_box) => match black_box {
-                BlackBoxFuncCall::RANGE { input, num_bits: 1 } => {
+                BlackBoxFuncCall::RANGE { input, num_bits } => {
                     push_dependency_edge(&mut dependency_edges, function_input_wires(input));
-                    match boolean_constraint(*input, false, &input_indices) {
-                        Ok(Some(constraint)) => orig_constraints.push(constraint),
-                        Ok(None) => {}
+
+                    let aux_wires =
+                        match allocate_range_aux_wires(*input, *num_bits, &mut next_aux_wire) {
+                            Ok(aux_wires) => aux_wires,
+                            Err(reason) => {
+                                push_unsupported_issue(
+                                    &mut unsupported_issues,
+                                    &mut dependency_edges,
+                                    opcode_index,
+                                    reason,
+                                    opcode_wires(opcode),
+                                );
+                                continue;
+                            }
+                        };
+
+                    match range_constraints(*input, *num_bits, &aux_wires, false, &input_indices) {
+                        Ok(constraints) => orig_constraints.extend(constraints),
                         Err(reason) => {
                             push_unsupported_issue(
                                 &mut unsupported_issues,
@@ -82,9 +98,8 @@ pub(crate) fn build_model(
                             continue;
                         }
                     }
-                    match boolean_constraint(*input, true, &input_indices) {
-                        Ok(Some(constraint)) => alt_constraints.push(constraint),
-                        Ok(None) => {}
+                    match range_constraints(*input, *num_bits, &aux_wires, true, &input_indices) {
+                        Ok(constraints) => alt_constraints.extend(constraints),
                         Err(reason) => {
                             push_unsupported_issue(
                                 &mut unsupported_issues,
@@ -96,13 +111,6 @@ pub(crate) fn build_model(
                         }
                     }
                 }
-                BlackBoxFuncCall::RANGE { num_bits, .. } => push_unsupported_issue(
-                    &mut unsupported_issues,
-                    &mut dependency_edges,
-                    opcode_index,
-                    format!("unsupported RANGE width {num_bits}"),
-                    opcode_wires(opcode),
-                ),
                 _ => push_unsupported_issue(
                     &mut unsupported_issues,
                     &mut dependency_edges,
@@ -141,7 +149,7 @@ pub(crate) fn build_model(
         .collect();
 
     AcirPicusModel {
-        n_wires: max_witness_index(circuit).map_or(1, |index| index as usize + 2),
+        n_wires: next_aux_wire,
         input_indices,
         orig_constraints,
         alt_constraints,
@@ -273,31 +281,127 @@ fn push_linear_term(
     });
 }
 
-fn boolean_constraint(
+fn allocate_range_aux_wires(
     input: FunctionInput<FieldElement>,
+    num_bits: u32,
+    next_aux_wire: &mut usize,
+) -> Result<Vec<usize>, String> {
+    match input {
+        FunctionInput::Constant(value) => {
+            if constant_fits_in_bits(value, num_bits) {
+                Ok(Vec::new())
+            } else {
+                Err(format!(
+                    "RANGE({num_bits}) constant input does not fit: {value}"
+                ))
+            }
+        }
+        FunctionInput::Witness(_) if num_bits <= 1 || num_bits >= FieldElement::max_num_bits() => {
+            Ok(Vec::new())
+        }
+        FunctionInput::Witness(_) => {
+            let num_bits = usize::try_from(num_bits)
+                .map_err(|_| format!("RANGE width {num_bits} does not fit usize"))?;
+            let start = *next_aux_wire;
+            *next_aux_wire += num_bits;
+            Ok((start..start + num_bits).collect())
+        }
+    }
+}
+
+fn range_constraints(
+    input: FunctionInput<FieldElement>,
+    num_bits: u32,
+    aux_wires: &[usize],
     is_alt: bool,
     input_indices: &HashSet<usize>,
-) -> Result<Option<IRConstraint>, String> {
+) -> Result<Vec<IRConstraint>, String> {
     match input {
-        FunctionInput::Witness(witness) => {
-            let wire = picus_wire(witness);
-            let var = var_name(wire, is_alt, input_indices);
-            Ok(Some(IRConstraint::NonLinear {
-                lhs_terms: vec![IRProductTerm {
-                    coeff: BigUint::from(1u32),
-                    var_a: var.clone(),
-                    var_b: var.clone(),
-                }],
-                rhs_terms: vec![IRTerm {
-                    coeff: BigUint::from(1u32),
-                    var,
-                }],
-            }))
-        }
-        FunctionInput::Constant(value) if value.is_zero() || value.is_one() => Ok(None),
         FunctionInput::Constant(value) => {
-            Err(format!("RANGE(1) constant input is not boolean: {value}"))
+            if constant_fits_in_bits(value, num_bits) {
+                Ok(Vec::new())
+            } else {
+                Err(format!(
+                    "RANGE({num_bits}) constant input does not fit: {value}"
+                ))
+            }
         }
+        FunctionInput::Witness(_) if num_bits >= FieldElement::max_num_bits() => Ok(Vec::new()),
+        FunctionInput::Witness(witness) if num_bits == 0 => {
+            Ok(vec![IRConstraint::Linear(vec![IRTerm {
+                coeff: BigUint::one(),
+                var: var_name(picus_wire(witness), is_alt, input_indices),
+            }])])
+        }
+        FunctionInput::Witness(witness) if num_bits == 1 => Ok(vec![boolean_wire_constraint(
+            picus_wire(witness),
+            is_alt,
+            input_indices,
+        )]),
+        FunctionInput::Witness(witness) => {
+            let expected_len = usize::try_from(num_bits)
+                .map_err(|_| format!("RANGE width {num_bits} does not fit usize"))?;
+            if aux_wires.len() != expected_len {
+                return Err(format!(
+                    "RANGE({num_bits}) internal error: expected {expected_len} aux wires, got {}",
+                    aux_wires.len()
+                ));
+            }
+
+            let mut constraints = Vec::with_capacity(aux_wires.len() + 1);
+            for &wire in aux_wires {
+                constraints.push(boolean_wire_constraint(wire, is_alt, input_indices));
+            }
+
+            let mut linear_terms = vec![IRTerm {
+                coeff: BigUint::one(),
+                var: var_name(picus_wire(witness), is_alt, input_indices),
+            }];
+            let mut power_of_two = BigUint::one();
+            for &wire in aux_wires {
+                linear_terms.push(IRTerm {
+                    coeff: neg_mod_coeff(&power_of_two),
+                    var: var_name(wire, is_alt, input_indices),
+                });
+                power_of_two <<= 1usize;
+            }
+            constraints.push(IRConstraint::Linear(linear_terms));
+
+            Ok(constraints)
+        }
+    }
+}
+
+fn boolean_wire_constraint(
+    wire: usize,
+    is_alt: bool,
+    input_indices: &HashSet<usize>,
+) -> IRConstraint {
+    let var = var_name(wire, is_alt, input_indices);
+    IRConstraint::NonLinear {
+        lhs_terms: vec![IRProductTerm {
+            coeff: BigUint::one(),
+            var_a: var.clone(),
+            var_b: var.clone(),
+        }],
+        rhs_terms: vec![IRTerm {
+            coeff: BigUint::one(),
+            var,
+        }],
+    }
+}
+
+fn constant_fits_in_bits(value: FieldElement, num_bits: u32) -> bool {
+    num_bits >= FieldElement::max_num_bits() || value.num_bits() <= num_bits
+}
+
+fn neg_mod_coeff(value: &BigUint) -> BigUint {
+    let modulus = FieldElement::modulus();
+    let reduced = value % &modulus;
+    if reduced.is_zero() {
+        BigUint::zero()
+    } else {
+        modulus - reduced
     }
 }
 
@@ -594,11 +698,117 @@ mod tests {
     }
 
     #[test]
-    fn unrelated_unsupported_opcode_does_not_block_target() {
+    fn range_allocates_bit_decomposition_constraints() {
         let circuit = Circuit {
             opcodes: vec![Opcode::BlackBoxFuncCall(BlackBoxFuncCall::RANGE {
-                input: FunctionInput::Witness(Witness(9)),
+                input: FunctionInput::Witness(Witness(0)),
+                num_bits: 3,
+            })],
+            ..Circuit::<FieldElement>::default()
+        };
+
+        let model = build_model(&circuit, FixedMode::Public);
+
+        assert_eq!(model.n_wires, 5);
+        assert!(model.unsupported_reasons.is_empty());
+        assert_eq!(model.orig_constraints.len(), 4);
+        assert_eq!(model.alt_constraints.len(), 4);
+
+        for (index, constraint) in model.orig_constraints.iter().take(3).enumerate() {
+            let IRConstraint::NonLinear {
+                lhs_terms,
+                rhs_terms,
+            } = constraint
+            else {
+                panic!("expected boolean constraint");
+            };
+            let bit_var = format!("x{}", index + 2);
+            assert_eq!(lhs_terms[0].var_a, bit_var);
+            assert_eq!(lhs_terms[0].var_b, bit_var);
+            assert_eq!(rhs_terms[0].var, bit_var);
+        }
+
+        let IRConstraint::Linear(terms) = &model.orig_constraints[3] else {
+            panic!("expected range sum constraint");
+        };
+        let modulus = FieldElement::modulus();
+        assert_eq!(terms.len(), 4);
+        assert_eq!(terms[0].coeff, BigUint::from(1u32));
+        assert_eq!(terms[0].var, "x1");
+        assert_eq!(terms[1].coeff, &modulus - BigUint::from(1u32));
+        assert_eq!(terms[1].var, "x2");
+        assert_eq!(terms[2].coeff, &modulus - BigUint::from(2u32));
+        assert_eq!(terms[2].var, "x3");
+        assert_eq!(terms[3].coeff, &modulus - BigUint::from(4u32));
+        assert_eq!(terms[3].var, "x4");
+    }
+
+    #[test]
+    fn range_zero_constrains_witness_to_zero() {
+        let circuit = Circuit {
+            opcodes: vec![Opcode::BlackBoxFuncCall(BlackBoxFuncCall::RANGE {
+                input: FunctionInput::Witness(Witness(0)),
+                num_bits: 0,
+            })],
+            ..Circuit::<FieldElement>::default()
+        };
+
+        let model = build_model(&circuit, FixedMode::Public);
+
+        assert_eq!(model.n_wires, 2);
+        assert!(model.unsupported_reasons.is_empty());
+        assert_eq!(model.orig_constraints.len(), 1);
+
+        let IRConstraint::Linear(terms) = &model.orig_constraints[0] else {
+            panic!("expected zero constraint");
+        };
+        assert_eq!(terms.len(), 1);
+        assert_eq!(terms[0].coeff, BigUint::from(1u32));
+        assert_eq!(terms[0].var, "x1");
+    }
+
+    #[test]
+    fn range_at_field_width_is_noop() {
+        let circuit = Circuit {
+            opcodes: vec![Opcode::BlackBoxFuncCall(BlackBoxFuncCall::RANGE {
+                input: FunctionInput::Witness(Witness(0)),
+                num_bits: FieldElement::max_num_bits(),
+            })],
+            ..Circuit::<FieldElement>::default()
+        };
+
+        let model = build_model(&circuit, FixedMode::Public);
+
+        assert_eq!(model.n_wires, 2);
+        assert!(model.unsupported_reasons.is_empty());
+        assert!(model.orig_constraints.is_empty());
+        assert!(model.alt_constraints.is_empty());
+    }
+
+    #[test]
+    fn out_of_range_constant_is_unsupported() {
+        let circuit = Circuit {
+            opcodes: vec![Opcode::BlackBoxFuncCall(BlackBoxFuncCall::RANGE {
+                input: FunctionInput::Constant(FieldElement::from(4u32)),
+                num_bits: 2,
+            })],
+            ..Circuit::<FieldElement>::default()
+        };
+
+        let model = build_model(&circuit, FixedMode::Public);
+
+        assert_eq!(model.unsupported_reasons.len(), 1);
+        assert!(model.unsupported_reasons[0].contains("RANGE(2) constant input does not fit"));
+    }
+
+    #[test]
+    fn unrelated_unsupported_opcode_does_not_block_target() {
+        let circuit = Circuit {
+            opcodes: vec![Opcode::BlackBoxFuncCall(BlackBoxFuncCall::AND {
+                lhs: FunctionInput::Witness(Witness(9)),
+                rhs: FunctionInput::Constant(FieldElement::from(1u32)),
                 num_bits: 8,
+                output: Witness(10),
             })],
             ..Circuit::<FieldElement>::default()
         };
@@ -618,9 +828,11 @@ mod tests {
         let circuit = Circuit {
             opcodes: vec![
                 Opcode::AssertZero(expression),
-                Opcode::BlackBoxFuncCall(BlackBoxFuncCall::RANGE {
-                    input: FunctionInput::Witness(Witness(9)),
+                Opcode::BlackBoxFuncCall(BlackBoxFuncCall::AND {
+                    lhs: FunctionInput::Witness(Witness(9)),
+                    rhs: FunctionInput::Constant(FieldElement::from(1u32)),
                     num_bits: 8,
+                    output: Witness(10),
                 }),
             ],
             ..Circuit::<FieldElement>::default()
@@ -641,9 +853,11 @@ mod tests {
             private_parameters: [Witness(0)].into_iter().collect(),
             opcodes: vec![
                 Opcode::AssertZero(expression),
-                Opcode::BlackBoxFuncCall(BlackBoxFuncCall::RANGE {
-                    input: FunctionInput::Witness(Witness(0)),
+                Opcode::BlackBoxFuncCall(BlackBoxFuncCall::AND {
+                    lhs: FunctionInput::Witness(Witness(0)),
+                    rhs: FunctionInput::Constant(FieldElement::from(1u32)),
                     num_bits: 8,
+                    output: Witness(10),
                 }),
             ],
             ..Circuit::<FieldElement>::default()

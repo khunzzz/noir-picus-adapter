@@ -34,7 +34,9 @@ exists W1, W2:
 ## Перевод ACIR
 
 - `AssertZero(Expression)` переводится в linear/nonlinear Picus constraints.
-- `RANGE` с `num_bits = 1` переводится в boolean constraint.
+- `RANGE` переводится в boolean constraint для `num_bits = 1`, в `x = Σ 2^i b_i`
+  с boolean bit-witnesses для меньших ширин поля, и в no-op для ширин не меньше
+  битности поля.
 - `BrilligCall` считается недетерминированным источником; его выходы можно
   проверять как цели.
 - Остальные blackbox calls, memory opcodes и ACIR calls пока не переводятся.

@@ -63,7 +63,7 @@ cargo run -- scan <artifact> --verbose
 ## Что поддержано
 
 - `AssertZero(Expression)`
-- `RANGE` с `num_bits = 1`
+- `RANGE` для witness-значений через bit decomposition
 - выходы `BrilligCall` как цели проверки
 
 Если неподдержанный opcode может влиять на выбранную цель, она помечается как
