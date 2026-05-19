@@ -1,0 +1,96 @@
+use std::path::Path;
+
+use acir::{FieldElement, circuit::Program};
+use color_eyre::eyre::{Context, Result, eyre};
+use serde::Deserialize;
+
+pub(crate) struct LoadedProgram {
+    pub(crate) name: String,
+    pub(crate) program: Program<FieldElement>,
+}
+
+#[derive(Deserialize)]
+struct ProgramArtifact {
+    #[serde(deserialize_with = "Program::deserialize_program_base64")]
+    bytecode: Program<FieldElement>,
+}
+
+#[derive(Deserialize)]
+struct ArtifactMetadata {
+    noir_version: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ContractArtifact {
+    name: String,
+    functions: Vec<ContractFunctionArtifact>,
+}
+
+#[derive(Deserialize)]
+struct ContractFunctionArtifact {
+    name: String,
+    #[serde(deserialize_with = "Program::deserialize_program_base64")]
+    bytecode: Program<FieldElement>,
+}
+
+enum Artifact {
+    Program(ProgramArtifact),
+    Contract(ContractArtifact),
+}
+
+pub(crate) fn load_programs(path: &Path) -> Result<Vec<LoadedProgram>> {
+    let artifact = read_artifact(path)
+        .wrap_err_with(|| format!("failed to read Noir artifact {}", path.display()))?;
+
+    match artifact {
+        Artifact::Program(program) => Ok(vec![LoadedProgram {
+            name: artifact_stem(path),
+            program: program.bytecode,
+        }]),
+        Artifact::Contract(contract) => {
+            let contract_name = contract.name;
+            Ok(contract
+                .functions
+                .into_iter()
+                .map(|function| LoadedProgram {
+                    name: format!("{contract_name}::{}", function.name),
+                    program: function.bytecode,
+                })
+                .collect())
+        }
+    }
+}
+
+fn read_artifact(path: &Path) -> Result<Artifact> {
+    let file = path.with_extension("json");
+    let json = std::fs::read(&file)
+        .wrap_err_with(|| format!("failed to read artifact file {}", file.display()))?;
+    let metadata = serde_json::from_slice::<ArtifactMetadata>(&json).ok();
+
+    serde_json::from_slice::<ProgramArtifact>(&json)
+        .map(Artifact::Program)
+        .or_else(|program_error| {
+            serde_json::from_slice::<ContractArtifact>(&json)
+                .map(Artifact::Contract)
+                .map_err(|contract_error| {
+                    let noir_version = metadata
+                        .and_then(|metadata| metadata.noir_version)
+                        .unwrap_or_else(|| "unknown".to_owned());
+                    eyre!(
+                        "artifact is neither ProgramArtifact nor ContractArtifact; \
+                         artifact noir_version: {noir_version}; \
+                         the artifact bytecode must be produced by a Noir/nargo version compatible \
+                         with the acir crate used by this binary; \
+                         rebuild the artifact with the nargo binary from the matching Noir checkout; \
+                         program error: {program_error}; contract error: {contract_error}"
+                    )
+                })
+        })
+}
+
+fn artifact_stem(path: &Path) -> String {
+    path.file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or("program")
+        .to_owned()
+}

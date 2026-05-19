@@ -1,0 +1,4 @@
+/target/
+**/target/
+examples/smt/
+.z3-trace

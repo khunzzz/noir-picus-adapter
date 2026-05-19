@@ -1,0 +1,6 @@
+[package]
+name = "unsafe_division_hint"
+type = "bin"
+authors = [""]
+
+[dependencies]

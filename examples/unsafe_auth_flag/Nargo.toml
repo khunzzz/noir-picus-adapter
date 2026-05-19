@@ -1,0 +1,6 @@
+[package]
+name = "unsafe_auth_flag"
+type = "bin"
+authors = [""]
+
+[dependencies]

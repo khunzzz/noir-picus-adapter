@@ -1,0 +1,29 @@
+[package]
+name = "noir-picus-acir"
+description = "Picus-backed ACIR underconstraint scanner for Noir artifacts"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.89.0"
+license = "MIT OR Apache-2.0"
+
+[[bin]]
+name = "noir-picus-acir"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive", "env"] }
+color-eyre = "0.6"
+num-bigint = "0.4"
+num-traits = "0.2"
+serde = { version = "1", features = ["derive", "rc"] }
+serde_json = "1"
+
+[dependencies.acir]
+git = "https://github.com/noir-lang/noir.git"
+rev = "214dcce417492306a09b8dca6e9d8f59581d0b26"
+package = "acir"
+
+[dependencies.picus-smt]
+git = "https://github.com/chyanju/picus.git"
+rev = "7cb6d450a455bde7f447b831d79da343fa4ef084"
+package = "picus-smt"

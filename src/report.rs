@@ -1,0 +1,266 @@
+use color_eyre::eyre::Result;
+use serde::Serialize;
+
+use crate::targets::{Target, TargetOrigin};
+
+#[derive(Debug, Serialize)]
+pub(crate) struct ScanReport {
+    pub(crate) artifact: String,
+    pub(crate) solver: String,
+    pub(crate) theory: String,
+    pub(crate) timeout_ms: u64,
+    pub(crate) fixed_mode: String,
+    pub(crate) target_mode: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) dump_smt_dir: Option<String>,
+    pub(crate) programs: Vec<ProgramReport>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct ProgramReport {
+    pub(crate) name: String,
+    pub(crate) circuits: Vec<CircuitReport>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct CircuitReport {
+    pub(crate) name: String,
+    pub(crate) index: usize,
+    pub(crate) private_parameters: Vec<u32>,
+    pub(crate) public_parameters: Vec<u32>,
+    pub(crate) return_values: Vec<u32>,
+    pub(crate) fixed_witnesses: Vec<u32>,
+    pub(crate) n_wires: usize,
+    pub(crate) orig_constraint_count: usize,
+    pub(crate) alt_constraint_count: usize,
+    pub(crate) unsupported_reasons: Vec<String>,
+    pub(crate) targets: Vec<TargetReport>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct TargetReport {
+    pub(crate) witness: String,
+    pub(crate) witness_index: u32,
+    pub(crate) target_signal: usize,
+    pub(crate) original_var: String,
+    pub(crate) alternative_var: String,
+    pub(crate) origins: Vec<TargetOrigin>,
+    pub(crate) status: TargetStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) counterexample: Option<Counterexample>,
+}
+
+#[derive(Clone, Copy, Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum TargetStatus {
+    Verified,
+    Unsafe,
+    Unknown,
+    Unsupported,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct Counterexample {
+    pub(crate) original: Option<String>,
+    pub(crate) alternative: Option<String>,
+}
+
+#[derive(Debug)]
+pub(crate) struct SolverOutcome {
+    pub(crate) status: TargetStatus,
+    pub(crate) reason: Option<String>,
+    pub(crate) counterexample: Option<Counterexample>,
+}
+
+pub(crate) enum OutputFormat {
+    Json,
+}
+
+impl TargetReport {
+    pub(crate) fn from_solver(target: Target, outcome: SolverOutcome) -> Self {
+        let target_signal = target.witness.witness_index() as usize + 1;
+        Self {
+            witness: target.witness.to_string(),
+            witness_index: target.witness.witness_index(),
+            target_signal,
+            original_var: format!("x{target_signal}"),
+            alternative_var: format!("y{target_signal}"),
+            origins: target.origins,
+            status: outcome.status,
+            reason: outcome.reason,
+            counterexample: outcome.counterexample,
+        }
+    }
+
+    pub(crate) fn unsupported(target: Target, reason: String) -> Self {
+        let target_signal = target.witness.witness_index() as usize + 1;
+        Self {
+            witness: target.witness.to_string(),
+            witness_index: target.witness.witness_index(),
+            target_signal,
+            original_var: format!("x{target_signal}"),
+            alternative_var: format!("y{target_signal}"),
+            origins: target.origins,
+            status: TargetStatus::Unsupported,
+            reason: Some(reason),
+            counterexample: None,
+        }
+    }
+}
+
+impl ScanReport {
+    pub(crate) fn print(&self, format: OutputFormat) -> Result<()> {
+        match format {
+            OutputFormat::Json => {
+                serde_json::to_writer_pretty(std::io::stdout(), self)?;
+                println!();
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn print_human(&self, verbose: bool) {
+        println!("ACIR Picus scan: {}", self.artifact);
+        if verbose {
+            println!(
+                "config: solver={} theory={} timeout={}ms fixed={} targets={}",
+                self.solver, self.theory, self.timeout_ms, self.fixed_mode, self.target_mode
+            );
+            if let Some(dump_smt_dir) = &self.dump_smt_dir {
+                println!("smt dumps: {dump_smt_dir}");
+            }
+        }
+        for program in &self.programs {
+            println!();
+            println!("Program: {}", program.name);
+            for circuit in &program.circuits {
+                println!(
+                    "  Circuit #{} {}: {} target(s), {} fixed witness(es), {} unsupported issue(s)",
+                    circuit.index,
+                    circuit.name,
+                    circuit.targets.len(),
+                    circuit.fixed_witnesses.len(),
+                    circuit.unsupported_reasons.len()
+                );
+                if verbose {
+                    println!(
+                        "    witnesses: private={}, public={}, returns={}, fixed={}",
+                        format_witness_list(&circuit.private_parameters),
+                        format_witness_list(&circuit.public_parameters),
+                        format_witness_list(&circuit.return_values),
+                        format_witness_list(&circuit.fixed_witnesses)
+                    );
+                    println!(
+                        "    picus ir: n_wires={}, orig_constraints={}, alt_constraints={}",
+                        circuit.n_wires,
+                        circuit.orig_constraint_count,
+                        circuit.alt_constraint_count
+                    );
+                    println!("    self-composition: first copy uses x*, second copy uses y*");
+                    println!("    fixed witnesses stay x* in both copies");
+                }
+
+                if circuit.targets.is_empty() {
+                    println!("    no Brillig outputs or return values found");
+                    continue;
+                }
+
+                for target in &circuit.targets {
+                    let reason = target
+                        .reason
+                        .as_ref()
+                        .map(|reason| format!(" ({reason})"))
+                        .unwrap_or_default();
+                    println!(
+                        "    {}: {}{}",
+                        target.witness,
+                        target.status.as_str(),
+                        reason
+                    );
+                    if let Some(counterexample) = &target.counterexample {
+                        println!(
+                            "      counterexample: original={}, alternative={}",
+                            counterexample.original.as_deref().unwrap_or("<missing>"),
+                            counterexample.alternative.as_deref().unwrap_or("<missing>")
+                        );
+                    }
+                    if verbose {
+                        println!(
+                            "      query target: {} != {} (ACIR {} -> Picus signal {})",
+                            target.original_var,
+                            target.alternative_var,
+                            target.witness,
+                            target.target_signal
+                        );
+                        println!("      origins:");
+                        for origin in &target.origins {
+                            println!("        - {}", format_origin(origin));
+                        }
+                    }
+                }
+
+                for reason in &circuit.unsupported_reasons {
+                    println!("    unsupported: {reason}");
+                }
+            }
+        }
+    }
+}
+
+impl TargetStatus {
+    fn as_str(self) -> &'static str {
+        match self {
+            TargetStatus::Verified => "verified",
+            TargetStatus::Unsafe => "unsafe",
+            TargetStatus::Unknown => "unknown",
+            TargetStatus::Unsupported => "unsupported",
+        }
+    }
+}
+
+fn format_witness_list(witnesses: &[u32]) -> String {
+    if witnesses.is_empty() {
+        return "[]".to_owned();
+    }
+
+    let values = witnesses
+        .iter()
+        .map(|witness| format!("w{witness}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("[{values}]")
+}
+
+fn format_origin(origin: &TargetOrigin) -> String {
+    match origin {
+        TargetOrigin::BrilligSimpleOutput {
+            opcode_index,
+            function_id,
+            function_name,
+        } => format!(
+            "Brillig simple output from opcode {opcode_index}, function {}",
+            format_function(*function_id, function_name)
+        ),
+        TargetOrigin::BrilligArrayOutput {
+            opcode_index,
+            function_id,
+            function_name,
+            array_index,
+        } => format!(
+            "Brillig array output #{array_index} from opcode {opcode_index}, function {}",
+            format_function(*function_id, function_name)
+        ),
+        TargetOrigin::ReturnValue { return_index } => {
+            format!("return value #{return_index}")
+        }
+    }
+}
+
+fn format_function(function_id: u32, function_name: &Option<String>) -> String {
+    match function_name {
+        Some(function_name) => format!("#{function_id} ({function_name})"),
+        None => format!("#{function_id}"),
+    }
+}

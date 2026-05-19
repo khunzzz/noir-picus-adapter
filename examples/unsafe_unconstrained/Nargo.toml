@@ -1,0 +1,6 @@
+[package]
+name = "unsafe_unconstrained"
+type = "bin"
+authors = [""]
+
+[dependencies]

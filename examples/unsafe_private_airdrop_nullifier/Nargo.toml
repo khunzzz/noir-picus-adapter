@@ -1,0 +1,6 @@
+[package]
+name = "unsafe_private_airdrop_nullifier"
+type = "bin"
+authors = [""]
+
+[dependencies]
