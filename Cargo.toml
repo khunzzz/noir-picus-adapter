@@ -1,13 +1,13 @@
 [package]
-name = "noir-picus-acir"
-description = "Picus-backed ACIR underconstraint scanner for Noir artifacts"
+name = "noir-picus-adapter"
+description = "Picus adapter for scanning Noir ACIR artifacts"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.89.0"
 license = "MIT OR Apache-2.0"
 
 [[bin]]
-name = "noir-picus-acir"
+name = "noir-picus-adapter"
 path = "src/main.rs"
 
 [dependencies]

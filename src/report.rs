@@ -122,7 +122,7 @@ impl ScanReport {
     }
 
     pub(crate) fn print_human(&self, verbose: bool) {
-        println!("ACIR Picus scan: {}", self.artifact);
+        println!("noir-picus-adapter scan: {}", self.artifact);
         if verbose {
             println!(
                 "config: solver={} theory={} timeout={}ms fixed={} targets={}",

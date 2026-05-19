@@ -1,4 +1,4 @@
-# noir-picus-acir
+# noir-picus-adapter
 
 Проверка Noir ACIR-артефактов на недоограниченные значения.
 

@@ -17,8 +17,8 @@ use targets::TargetMode;
 use translate::FixedMode;
 
 #[derive(Debug, Parser)]
-#[command(name = "noir-picus-acir")]
-#[command(about = "Picus-backed ACIR underconstraint scanner for Noir artifacts")]
+#[command(name = "noir-picus-adapter")]
+#[command(about = "Picus adapter for scanning Noir ACIR artifacts")]
 struct Cli {
     #[command(subcommand)]
     command: Command,
