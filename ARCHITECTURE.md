@@ -37,6 +37,8 @@ exists W1, W2:
 - `RANGE` переводится в boolean constraint для `num_bits = 1`, в `x = Σ 2^i b_i`
   с boolean bit-witnesses для меньших ширин поля, и в no-op для ширин не меньше
   битности поля.
+- `AND`/`XOR` переводятся через bit decomposition входов и выхода для ширин меньше
+  битности поля.
 - `BrilligCall` считается недетерминированным источником; его выходы можно
   проверять как цели.
 - Остальные blackbox calls, memory opcodes и ACIR calls пока не переводятся.

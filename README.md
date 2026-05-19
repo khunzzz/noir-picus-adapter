@@ -64,6 +64,7 @@ cargo run -- scan <artifact> --verbose
 
 - `AssertZero(Expression)`
 - `RANGE` для witness-значений через bit decomposition
+- `AND`/`XOR` для ширин меньше битности поля
 - выходы `BrilligCall` как цели проверки
 
 Если неподдержанный opcode может влиять на выбранную цель, она помечается как
