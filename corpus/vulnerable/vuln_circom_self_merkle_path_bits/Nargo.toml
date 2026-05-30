@@ -1,0 +1,6 @@
+[package]
+name = "vuln_circom_self_merkle_path_bits"
+type = "bin"
+authors = [""]
+
+[dependencies]

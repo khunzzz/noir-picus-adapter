@@ -1,0 +1,6 @@
+[package]
+name = "vuln_bits2point_free_output"
+type = "bin"
+authors = [""]
+
+[dependencies]

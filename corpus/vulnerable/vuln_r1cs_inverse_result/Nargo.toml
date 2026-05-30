@@ -1,0 +1,6 @@
+[package]
+name = "vuln_r1cs_inverse_result"
+type = "bin"
+authors = [""]
+
+[dependencies]

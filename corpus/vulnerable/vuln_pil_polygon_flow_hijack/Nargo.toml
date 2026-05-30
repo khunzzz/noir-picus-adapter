@@ -1,0 +1,6 @@
+[package]
+name = "vuln_pil_polygon_flow_hijack"
+type = "bin"
+authors = [""]
+
+[dependencies]

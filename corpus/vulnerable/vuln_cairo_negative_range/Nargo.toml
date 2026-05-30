@@ -1,0 +1,6 @@
+[package]
+name = "vuln_cairo_negative_range"
+type = "bin"
+authors = [""]
+
+[dependencies]

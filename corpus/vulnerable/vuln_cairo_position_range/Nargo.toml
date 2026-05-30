@@ -1,0 +1,6 @@
+[package]
+name = "vuln_cairo_position_range"
+type = "bin"
+authors = [""]
+
+[dependencies]

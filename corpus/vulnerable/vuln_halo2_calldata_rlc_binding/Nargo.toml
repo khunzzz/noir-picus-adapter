@@ -1,0 +1,6 @@
+[package]
+name = "vuln_halo2_calldata_rlc_binding"
+type = "bin"
+authors = [""]
+
+[dependencies]

@@ -1,0 +1,7 @@
+[package]
+name = "stress_rollup_mega_batch_vulnerable"
+type = "bin"
+authors = [""]
+
+[dependencies]
+realistic_common = { path = "../../../realistic_common" }

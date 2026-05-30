@@ -1,0 +1,6 @@
+[package]
+name = "compiler_brillig_load_store_forward_ifelse"
+type = "bin"
+authors = [""]
+
+[dependencies]

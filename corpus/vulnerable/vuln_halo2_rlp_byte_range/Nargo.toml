@@ -1,0 +1,6 @@
+[package]
+name = "vuln_halo2_rlp_byte_range"
+type = "bin"
+authors = [""]
+
+[dependencies]

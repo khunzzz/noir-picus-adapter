@@ -1,0 +1,6 @@
+[package]
+name = "vuln_circom_self_packed_byte_range"
+type = "bin"
+authors = [""]
+
+[dependencies]

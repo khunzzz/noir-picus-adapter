@@ -1,0 +1,6 @@
+[package]
+name = "vuln_circom_darkforest_rangeproof"
+type = "bin"
+authors = [""]
+
+[dependencies]

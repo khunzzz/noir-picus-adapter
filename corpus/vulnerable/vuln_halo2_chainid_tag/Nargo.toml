@@ -1,0 +1,6 @@
+[package]
+name = "vuln_halo2_chainid_tag"
+type = "bin"
+authors = [""]
+
+[dependencies]

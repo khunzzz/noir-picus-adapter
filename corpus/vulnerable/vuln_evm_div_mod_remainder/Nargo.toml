@@ -1,0 +1,6 @@
+[package]
+name = "vuln_evm_div_mod_remainder"
+type = "bin"
+authors = [""]
+
+[dependencies]

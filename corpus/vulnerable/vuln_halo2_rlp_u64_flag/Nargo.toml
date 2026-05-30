@@ -1,0 +1,6 @@
+[package]
+name = "vuln_halo2_rlp_u64_flag"
+type = "bin"
+authors = [""]
+
+[dependencies]

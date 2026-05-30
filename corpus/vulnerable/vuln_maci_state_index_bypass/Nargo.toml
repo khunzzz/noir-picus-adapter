@@ -1,0 +1,6 @@
+[package]
+name = "vuln_maci_state_index_bypass"
+type = "bin"
+authors = [""]
+
+[dependencies]

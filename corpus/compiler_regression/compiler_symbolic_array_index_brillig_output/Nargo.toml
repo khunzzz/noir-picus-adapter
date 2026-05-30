@@ -1,0 +1,6 @@
+[package]
+name = "compiler_symbolic_array_index_brillig_output"
+type = "bin"
+authors = [""]
+
+[dependencies]

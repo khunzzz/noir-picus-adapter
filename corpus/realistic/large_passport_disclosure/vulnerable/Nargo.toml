@@ -1,0 +1,7 @@
+[package]
+name = "large_passport_disclosure_vulnerable"
+type = "bin"
+authors = [""]
+
+[dependencies]
+realistic_common = { path = "../../../realistic_common" }

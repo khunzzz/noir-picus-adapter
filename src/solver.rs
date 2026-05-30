@@ -29,26 +29,53 @@ pub(crate) fn solve_target(
 ) -> Result<TargetReport> {
     let target_signal = target_signal(target.witness);
     if model.input_indices.contains(&target_signal) {
+        // No solver call is needed if the target itself is fixed in both
+        // self-composition copies.
         return Ok(TargetReport::from_solver(
             target.clone(),
             SolverOutcome {
                 status: TargetStatus::Verified,
+                query_orig_constraint_count: Some(0),
+                query_alt_constraint_count: Some(0),
                 reason: Some("target is a fixed circuit input".to_owned()),
                 counterexample: None,
             },
         ));
     }
+    if model.is_fixed_known_signal(target_signal) {
+        // The target is not an input, but linear propagation proved it is
+        // uniquely determined by fixed/public inputs. Treat it as verified
+        // before constructing a large SMT query.
+        return Ok(TargetReport::from_solver(
+            target.clone(),
+            SolverOutcome {
+                status: TargetStatus::Verified,
+                query_orig_constraint_count: Some(0),
+                query_alt_constraint_count: Some(0),
+                reason: Some(
+                    "target is determined by fixed inputs through linear constraints".to_owned(),
+                ),
+                counterexample: None,
+            },
+        ));
+    }
 
+    // Query only the target cone. The full circuit IR is still reported at the
+    // circuit level, but Picus gets just the constraints that can affect this
+    // target after cutting at fixed-known signals.
+    let (orig_constraints, alt_constraints) = model.target_constraints(target.witness);
     let query = UniquenessQuery {
         prime: acir::FieldElement::modulus(),
         n_wires: model.n_wires,
         input_indices: model.input_indices.clone(),
-        orig_constraints: model.orig_constraints.clone(),
-        alt_constraints: model.alt_constraints.clone(),
+        orig_constraints,
+        alt_constraints,
         constants: Vec::new(),
-        known_signals: model.input_indices.clone(),
+        known_signals: model.fixed_known_signals.clone(),
         target_signal,
     };
+    let query_orig_constraint_count = query.orig_constraints.len();
+    let query_alt_constraint_count = query.alt_constraints.len();
 
     let mut backend = create_backend(options.solver, options.theory)
         .map_err(|message| eyre!("failed to create Picus backend: {message}"))?
@@ -68,11 +95,15 @@ pub(crate) fn solve_target(
     let outcome = match result {
         SolverResult::Unsat => SolverOutcome {
             status: TargetStatus::Verified,
+            query_orig_constraint_count: Some(query_orig_constraint_count),
+            query_alt_constraint_count: Some(query_alt_constraint_count),
             reason: None,
             counterexample: None,
         },
         SolverResult::Sat(model_values) => SolverOutcome {
             status: TargetStatus::Unsafe,
+            query_orig_constraint_count: Some(query_orig_constraint_count),
+            query_alt_constraint_count: Some(query_alt_constraint_count),
             reason: Some(
                 "found two satisfying assignments with different target values".to_owned(),
             ),
@@ -80,6 +111,8 @@ pub(crate) fn solve_target(
         },
         SolverResult::Unknown => SolverOutcome {
             status: TargetStatus::Unknown,
+            query_orig_constraint_count: Some(query_orig_constraint_count),
+            query_alt_constraint_count: Some(query_alt_constraint_count),
             reason: Some("solver returned unknown or timed out".to_owned()),
             counterexample: None,
         },

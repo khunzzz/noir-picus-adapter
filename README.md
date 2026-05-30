@@ -60,6 +60,29 @@ cargo run -- scan <artifact> --verbose
 
 Ожидаемые результаты и дополнительные команды: [examples/README.md](examples/README.md).
 
+## Корпус уязвимых цепей
+
+Банк более реалистичных уязвимых цепей лежит в [corpus](corpus/README.md).
+Он моделирует паттерны из Circom/R1CS/zkEVM-аудитов как Noir-артефакты для
+массового запуска адаптера:
+
+```bash
+./target/debug/noir-picus-adapter scan corpus/artifacts/vuln_binary_merkle_selector \
+  --fixed public \
+  --targets returns
+```
+
+Для быстрой регрессии используется `bash corpus/check_corpus.sh`. Для
+production-like оценки с medium/large схемами и fixed-вариантами используется
+`bash corpus/check_realistic_corpus.sh`. Для PoC из GitHub Security Advisories
+самого Noir-компилятора используется `bash corpus/check_compiler_regression.sh`;
+это отдельный слой, потому что часть compiler bugs проверяется через
+`nargo execute`, а не через uniqueness scan.
+
+Навигация по corpus-документации описана в начале [corpus/README.md](corpus/README.md):
+какой `.md` нужен для запуска, публикационного анализа, diversity-обоснования,
+compiler-regression и triage.
+
 ## Что поддержано
 
 - `AssertZero(Expression)`

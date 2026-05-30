@@ -1,0 +1,6 @@
+[package]
+name = "compiler_foreign_call_nested_tuple_array"
+type = "bin"
+authors = [""]
+
+[dependencies]

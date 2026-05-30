@@ -1,0 +1,6 @@
+[package]
+name = "vuln_bigint_remainder_overflow"
+type = "bin"
+authors = [""]
+
+[dependencies]

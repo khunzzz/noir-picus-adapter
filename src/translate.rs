@@ -1,8 +1,14 @@
-use std::collections::HashSet;
+use std::{
+    collections::{HashMap, HashSet},
+    ops::Range,
+};
 
 use acir::{
     AcirField, FieldElement,
-    circuit::{Circuit, Opcode, opcodes::BlackBoxFuncCall, opcodes::FunctionInput},
+    circuit::{
+        Circuit, Opcode,
+        opcodes::{BlackBoxFuncCall, BlockId, FunctionInput, MemOp, MemOpKind},
+    },
     native_types::{Expression, Witness},
 };
 use num_bigint::BigUint;
@@ -16,6 +22,8 @@ pub(crate) struct AcirPicusModel {
     pub(crate) orig_constraints: Vec<IRConstraint>,
     pub(crate) alt_constraints: Vec<IRConstraint>,
     pub(crate) unsupported_reasons: Vec<String>,
+    pub(crate) fixed_known_signals: HashSet<usize>,
+    constraint_groups: Vec<ConstraintGroup>,
     unsupported_issues: Vec<UnsupportedIssue>,
     dependency_edges: Vec<Vec<usize>>,
 }
@@ -30,6 +38,15 @@ pub(crate) enum FixedMode {
 struct UnsupportedIssue {
     reason: String,
     wires: Vec<usize>,
+}
+
+#[derive(Clone, Debug)]
+struct ConstraintGroup {
+    // All IR constraints emitted for one ACIR opcode. Keeping the wire set and
+    // ranges lets us later slice a per-target query without losing aux wires.
+    wires: Vec<usize>,
+    orig_range: Range<usize>,
+    alt_range: Range<usize>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -72,18 +89,29 @@ pub(crate) fn build_model(
     let mut alt_constraints = Vec::new();
     let mut unsupported_issues = Vec::new();
     let mut dependency_edges = Vec::new();
+    let mut constraint_groups = Vec::new();
     let mut next_aux_wire = max_witness_index(circuit).map_or(1, |index| index as usize + 2);
+    let mut memory_blocks = HashMap::<BlockId, Vec<usize>>::new();
 
     for (opcode_index, opcode) in circuit.opcodes.iter().enumerate() {
         match opcode {
             Opcode::AssertZero(expression) => {
-                push_dependency_edge(&mut dependency_edges, expression_wires(expression));
-                if let Some(constraint) = expression_to_ir(expression, false, &input_indices) {
-                    orig_constraints.push(constraint);
-                }
-                if let Some(constraint) = expression_to_ir(expression, true, &input_indices) {
-                    alt_constraints.push(constraint);
-                }
+                let wires = expression_wires(expression);
+                push_dependency_edge(&mut dependency_edges, wires.clone());
+                let orig = expression_to_ir(expression, false, &input_indices)
+                    .into_iter()
+                    .collect();
+                let alt = expression_to_ir(expression, true, &input_indices)
+                    .into_iter()
+                    .collect();
+                push_constraint_group(
+                    &mut orig_constraints,
+                    &mut alt_constraints,
+                    &mut constraint_groups,
+                    wires,
+                    orig,
+                    alt,
+                );
             }
             Opcode::BlackBoxFuncCall(black_box) => match black_box {
                 BlackBoxFuncCall::AND {
@@ -92,8 +120,7 @@ pub(crate) fn build_model(
                     num_bits,
                     output,
                 } => {
-                    push_dependency_edge(&mut dependency_edges, opcode_wires(opcode));
-                    match bitwise_constraints_for_copies(
+                    match bitwise_constraint_group(
                         BitwiseOp::And,
                         *lhs,
                         *rhs,
@@ -102,9 +129,16 @@ pub(crate) fn build_model(
                         &mut next_aux_wire,
                         &input_indices,
                     ) {
-                        Ok((orig, alt)) => {
-                            orig_constraints.extend(orig);
-                            alt_constraints.extend(alt);
+                        Ok((wires, orig, alt)) => {
+                            push_dependency_edge(&mut dependency_edges, wires.clone());
+                            push_constraint_group(
+                                &mut orig_constraints,
+                                &mut alt_constraints,
+                                &mut constraint_groups,
+                                wires,
+                                orig,
+                                alt,
+                            );
                         }
                         Err(reason) => push_unsupported_issue(
                             &mut unsupported_issues,
@@ -121,8 +155,7 @@ pub(crate) fn build_model(
                     num_bits,
                     output,
                 } => {
-                    push_dependency_edge(&mut dependency_edges, opcode_wires(opcode));
-                    match bitwise_constraints_for_copies(
+                    match bitwise_constraint_group(
                         BitwiseOp::Xor,
                         *lhs,
                         *rhs,
@@ -131,9 +164,16 @@ pub(crate) fn build_model(
                         &mut next_aux_wire,
                         &input_indices,
                     ) {
-                        Ok((orig, alt)) => {
-                            orig_constraints.extend(orig);
-                            alt_constraints.extend(alt);
+                        Ok((wires, orig, alt)) => {
+                            push_dependency_edge(&mut dependency_edges, wires.clone());
+                            push_constraint_group(
+                                &mut orig_constraints,
+                                &mut alt_constraints,
+                                &mut constraint_groups,
+                                wires,
+                                orig,
+                                alt,
+                            );
                         }
                         Err(reason) => push_unsupported_issue(
                             &mut unsupported_issues,
@@ -145,8 +185,6 @@ pub(crate) fn build_model(
                     }
                 }
                 BlackBoxFuncCall::RANGE { input, num_bits } => {
-                    push_dependency_edge(&mut dependency_edges, function_input_wires(input));
-
                     let aux_wires =
                         match allocate_range_aux_wires(*input, *num_bits, &mut next_aux_wire) {
                             Ok(aux_wires) => aux_wires,
@@ -161,9 +199,18 @@ pub(crate) fn build_model(
                                 continue;
                             }
                         };
+                    let mut wires = function_input_wires(input);
+                    wires.extend(aux_wires.iter().copied());
+                    push_dependency_edge(&mut dependency_edges, wires.clone());
 
-                    match range_constraints(*input, *num_bits, &aux_wires, false, &input_indices) {
-                        Ok(constraints) => orig_constraints.extend(constraints),
+                    let orig = match range_constraints(
+                        *input,
+                        *num_bits,
+                        &aux_wires,
+                        false,
+                        &input_indices,
+                    ) {
+                        Ok(constraints) => constraints,
                         Err(reason) => {
                             push_unsupported_issue(
                                 &mut unsupported_issues,
@@ -174,9 +221,15 @@ pub(crate) fn build_model(
                             );
                             continue;
                         }
-                    }
-                    match range_constraints(*input, *num_bits, &aux_wires, true, &input_indices) {
-                        Ok(constraints) => alt_constraints.extend(constraints),
+                    };
+                    let alt = match range_constraints(
+                        *input,
+                        *num_bits,
+                        &aux_wires,
+                        true,
+                        &input_indices,
+                    ) {
+                        Ok(constraints) => constraints,
                         Err(reason) => {
                             push_unsupported_issue(
                                 &mut unsupported_issues,
@@ -185,8 +238,17 @@ pub(crate) fn build_model(
                                 reason,
                                 opcode_wires(opcode),
                             );
+                            continue;
                         }
-                    }
+                    };
+                    push_constraint_group(
+                        &mut orig_constraints,
+                        &mut alt_constraints,
+                        &mut constraint_groups,
+                        wires,
+                        orig,
+                        alt,
+                    );
                 }
                 _ => push_unsupported_issue(
                     &mut unsupported_issues,
@@ -197,20 +259,38 @@ pub(crate) fn build_model(
                 ),
             },
             Opcode::BrilligCall { .. } => {}
-            Opcode::MemoryOp { .. } => push_unsupported_issue(
-                &mut unsupported_issues,
-                &mut dependency_edges,
-                opcode_index,
-                "unsupported MemoryOp".to_owned(),
-                opcode_wires(opcode),
-            ),
-            Opcode::MemoryInit { .. } => push_unsupported_issue(
-                &mut unsupported_issues,
-                &mut dependency_edges,
-                opcode_index,
-                "unsupported MemoryInit".to_owned(),
-                opcode_wires(opcode),
-            ),
+            Opcode::MemoryOp { block_id, op } => match memory_constraint_group(
+                *block_id,
+                op,
+                &mut memory_blocks,
+                &mut next_aux_wire,
+                &input_indices,
+            ) {
+                Ok((wires, orig, alt)) => {
+                    push_dependency_edge(&mut dependency_edges, wires.clone());
+                    push_constraint_group(
+                        &mut orig_constraints,
+                        &mut alt_constraints,
+                        &mut constraint_groups,
+                        wires,
+                        orig,
+                        alt,
+                    );
+                }
+                Err(reason) => push_unsupported_issue(
+                    &mut unsupported_issues,
+                    &mut dependency_edges,
+                    opcode_index,
+                    reason,
+                    opcode_wires(opcode),
+                ),
+            },
+            Opcode::MemoryInit { block_id, init, .. } => {
+                memory_blocks.insert(
+                    *block_id,
+                    init.iter().copied().map(picus_wire).collect::<Vec<_>>(),
+                );
+            }
             Opcode::Call { .. } => push_unsupported_issue(
                 &mut unsupported_issues,
                 &mut dependency_edges,
@@ -224,6 +304,7 @@ pub(crate) fn build_model(
         .iter()
         .map(|issue| issue.reason.clone())
         .collect();
+    let fixed_known_signals = infer_fixed_known_signals(circuit, &input_indices);
 
     AcirPicusModel {
         n_wires: next_aux_wire,
@@ -231,12 +312,18 @@ pub(crate) fn build_model(
         orig_constraints,
         alt_constraints,
         unsupported_reasons,
+        fixed_known_signals,
+        constraint_groups,
         unsupported_issues,
         dependency_edges,
     }
 }
 
 impl AcirPicusModel {
+    pub(crate) fn is_fixed_known_signal(&self, signal: usize) -> bool {
+        self.fixed_known_signals.contains(&signal)
+    }
+
     pub(crate) fn unsupported_reasons_for_target(&self, target: Witness) -> Vec<String> {
         let component = self.dependency_component(target_signal(target));
 
@@ -249,9 +336,44 @@ impl AcirPicusModel {
             .collect()
     }
 
+    pub(crate) fn target_constraints(
+        &self,
+        target: Witness,
+    ) -> (Vec<IRConstraint>, Vec<IRConstraint>) {
+        // Build a cone-of-influence for this exact target and stop at values
+        // already determined by fixed/public inputs. This is the main scaling
+        // guard: Picus sees the vulnerable boundary, not the whole circuit.
+        let component =
+            self.dependency_component_cut(target_signal(target), &self.fixed_known_signals);
+        let mut orig = Vec::new();
+        let mut alt = Vec::new();
+
+        for group in &self.constraint_groups {
+            if !group.wires.iter().any(|wire| component.contains(wire)) {
+                continue;
+            }
+            orig.extend(
+                self.orig_constraints[group.orig_range.clone()]
+                    .iter()
+                    .cloned(),
+            );
+            alt.extend(
+                self.alt_constraints[group.alt_range.clone()]
+                    .iter()
+                    .cloned(),
+            );
+        }
+
+        (orig, alt)
+    }
+
     fn dependency_component(&self, target: usize) -> HashSet<usize> {
+        self.dependency_component_cut(target, &self.input_indices)
+    }
+
+    fn dependency_component_cut(&self, target: usize, cut_set: &HashSet<usize>) -> HashSet<usize> {
         let mut component = HashSet::new();
-        if self.input_indices.contains(&target) {
+        if cut_set.contains(&target) {
             return component;
         }
 
@@ -264,7 +386,7 @@ impl AcirPicusModel {
                     continue;
                 }
                 for wire in edge {
-                    if !self.input_indices.contains(wire) && component.insert(*wire) {
+                    if !cut_set.contains(wire) && component.insert(*wire) {
                         changed = true;
                     }
                 }
@@ -273,6 +395,94 @@ impl AcirPicusModel {
 
         component
     }
+}
+
+fn push_constraint_group(
+    orig_constraints: &mut Vec<IRConstraint>,
+    alt_constraints: &mut Vec<IRConstraint>,
+    constraint_groups: &mut Vec<ConstraintGroup>,
+    mut wires: Vec<usize>,
+    orig: Vec<IRConstraint>,
+    alt: Vec<IRConstraint>,
+) {
+    // ACIR opcodes can expand to several Picus constraints, especially
+    // RANGE/AND/XOR with decomposition wires. We keep them as an indivisible
+    // group so slicing cannot keep the public-facing wire and drop its aux bits.
+    let orig_start = orig_constraints.len();
+    let alt_start = alt_constraints.len();
+    orig_constraints.extend(orig);
+    alt_constraints.extend(alt);
+
+    wires.sort_unstable();
+    wires.dedup();
+    if !wires.is_empty()
+        && (orig_constraints.len() > orig_start || alt_constraints.len() > alt_start)
+    {
+        constraint_groups.push(ConstraintGroup {
+            wires,
+            orig_range: orig_start..orig_constraints.len(),
+            alt_range: alt_start..alt_constraints.len(),
+        });
+    }
+}
+
+fn infer_fixed_known_signals(
+    circuit: &Circuit<FieldElement>,
+    input_indices: &HashSet<usize>,
+) -> HashSet<usize> {
+    // Conservative propagation: if a linear equation has exactly one unknown,
+    // that unknown is uniquely determined by the current fixed/public set.
+    // Nonlinear constraints are intentionally ignored here.
+    let mut known = input_indices.clone();
+    let mut changed = true;
+
+    while changed {
+        changed = false;
+        for opcode in &circuit.opcodes {
+            let Opcode::AssertZero(expression) = opcode else {
+                continue;
+            };
+            let Some(wire) = single_unknown_linear_wire(expression, &known) else {
+                continue;
+            };
+            if known.insert(wire) {
+                changed = true;
+            }
+        }
+    }
+
+    known
+}
+
+fn single_unknown_linear_wire(
+    expression: &Expression<FieldElement>,
+    known: &HashSet<usize>,
+) -> Option<usize> {
+    if !expression.mul_terms.is_empty() {
+        return None;
+    }
+
+    let modulus = FieldElement::modulus();
+    let mut coefficients = HashMap::<usize, BigUint>::new();
+    for (coefficient, witness) in &expression.linear_combinations {
+        let coeff = field_to_biguint(*coefficient);
+        if coeff.is_zero() {
+            continue;
+        }
+        let entry = coefficients
+            .entry(picus_wire(*witness))
+            .or_insert_with(BigUint::zero);
+        *entry += coeff;
+        *entry %= &modulus;
+    }
+    coefficients.retain(|_, coeff| !coeff.is_zero());
+
+    let mut unknowns = coefficients
+        .keys()
+        .copied()
+        .filter(|wire| !known.contains(wire));
+    let unknown = unknowns.next()?;
+    unknowns.next().is_none().then_some(unknown)
 }
 
 pub(crate) fn picus_wire(witness: Witness) -> usize {
@@ -358,7 +568,7 @@ fn push_linear_term(
     });
 }
 
-fn bitwise_constraints_for_copies(
+fn bitwise_constraint_group(
     op: BitwiseOp,
     lhs: FunctionInput<FieldElement>,
     rhs: FunctionInput<FieldElement>,
@@ -366,7 +576,7 @@ fn bitwise_constraints_for_copies(
     num_bits: u32,
     next_aux_wire: &mut usize,
     input_indices: &HashSet<usize>,
-) -> Result<(Vec<IRConstraint>, Vec<IRConstraint>), String> {
+) -> Result<(Vec<usize>, Vec<IRConstraint>, Vec<IRConstraint>), String> {
     let aux_wires = allocate_bitwise_aux_wires(op, lhs, rhs, output, num_bits, next_aux_wire)?;
     let orig = bitwise_constraints(
         op,
@@ -388,7 +598,14 @@ fn bitwise_constraints_for_copies(
         true,
         input_indices,
     )?;
-    Ok((orig, alt))
+    let mut wires = function_input_wires(&lhs);
+    wires.extend(function_input_wires(&rhs));
+    wires.push(picus_wire(output));
+    wires.extend(aux_wires.lhs.iter().copied());
+    wires.extend(aux_wires.rhs.iter().copied());
+    wires.extend(aux_wires.output.iter().copied());
+
+    Ok((wires, orig, alt))
 }
 
 fn allocate_bitwise_aux_wires(
@@ -730,6 +947,187 @@ fn range_constraints(
     }
 }
 
+fn memory_constraint_group(
+    block_id: BlockId,
+    op: &MemOp<FieldElement>,
+    memory_blocks: &mut HashMap<BlockId, Vec<usize>>,
+    next_aux_wire: &mut usize,
+    input_indices: &HashSet<usize>,
+) -> Result<(Vec<usize>, Vec<IRConstraint>, Vec<IRConstraint>), String> {
+    let cells = memory_blocks
+        .get(&block_id)
+        .cloned()
+        .ok_or_else(|| format!("MemoryOp references uninitialized block {block_id}"))?;
+    if cells.is_empty() {
+        return Err(format!("MemoryOp references empty block {block_id}"));
+    }
+
+    let selectors = allocate_memory_aux_wires(cells.len(), next_aux_wire);
+    let new_cells = if matches!(op.operation, MemOpKind::Write) {
+        allocate_memory_aux_wires(cells.len(), next_aux_wire)
+    } else {
+        Vec::new()
+    };
+
+    let orig = memory_op_constraints(op, &cells, &selectors, &new_cells, false, input_indices);
+    let alt = memory_op_constraints(op, &cells, &selectors, &new_cells, true, input_indices);
+
+    let mut wires = vec![picus_wire(op.index), picus_wire(op.value)];
+    wires.extend(cells.iter().copied());
+    wires.extend(selectors.iter().copied());
+    wires.extend(new_cells.iter().copied());
+
+    if matches!(op.operation, MemOpKind::Write) {
+        memory_blocks.insert(block_id, new_cells);
+    }
+
+    Ok((wires, orig, alt))
+}
+
+fn allocate_memory_aux_wires(len: usize, next_aux_wire: &mut usize) -> Vec<usize> {
+    let start = *next_aux_wire;
+    *next_aux_wire += len;
+    (start..start + len).collect()
+}
+
+fn memory_op_constraints(
+    op: &MemOp<FieldElement>,
+    cells: &[usize],
+    selectors: &[usize],
+    new_cells: &[usize],
+    is_alt: bool,
+    input_indices: &HashSet<usize>,
+) -> Vec<IRConstraint> {
+    let mut constraints = memory_selector_constraints(op.index, selectors, is_alt, input_indices);
+    match op.operation {
+        MemOpKind::Read => {
+            constraints.push(memory_read_constraint(
+                picus_wire(op.value),
+                cells,
+                selectors,
+                is_alt,
+                input_indices,
+            ));
+        }
+        MemOpKind::Write => {
+            for ((&old_cell, &new_cell), &selector) in
+                cells.iter().zip(new_cells).zip(selectors)
+            {
+                constraints.push(memory_write_constraint(
+                    old_cell,
+                    new_cell,
+                    picus_wire(op.value),
+                    selector,
+                    is_alt,
+                    input_indices,
+                ));
+            }
+        }
+    }
+    constraints
+}
+
+fn memory_selector_constraints(
+    index: Witness,
+    selectors: &[usize],
+    is_alt: bool,
+    input_indices: &HashSet<usize>,
+) -> Vec<IRConstraint> {
+    let mut constraints = Vec::with_capacity(selectors.len() + 2);
+    for &selector in selectors {
+        constraints.push(boolean_wire_constraint(selector, is_alt, input_indices));
+    }
+
+    let mut one_hot_terms = selectors
+        .iter()
+        .map(|&selector| IRTerm {
+            coeff: BigUint::one(),
+            var: var_name(selector, is_alt, input_indices),
+        })
+        .collect::<Vec<_>>();
+    one_hot_terms.push(IRTerm {
+        coeff: neg_mod_coeff(&BigUint::one()),
+        var: var_name(0, is_alt, input_indices),
+    });
+    constraints.push(IRConstraint::Linear(one_hot_terms));
+
+    let mut index_terms = vec![IRTerm {
+        coeff: BigUint::one(),
+        var: var_name(picus_wire(index), is_alt, input_indices),
+    }];
+    for (cell_index, &selector) in selectors.iter().enumerate() {
+        let coeff = neg_mod_coeff(&BigUint::from(cell_index));
+        if coeff.is_zero() {
+            continue;
+        }
+        index_terms.push(IRTerm {
+            coeff,
+            var: var_name(selector, is_alt, input_indices),
+        });
+    }
+    constraints.push(IRConstraint::Linear(index_terms));
+
+    constraints
+}
+
+fn memory_read_constraint(
+    value: usize,
+    cells: &[usize],
+    selectors: &[usize],
+    is_alt: bool,
+    input_indices: &HashSet<usize>,
+) -> IRConstraint {
+    IRConstraint::NonLinear {
+        lhs_terms: cells
+            .iter()
+            .zip(selectors)
+            .map(|(&cell, &selector)| IRProductTerm {
+                coeff: BigUint::one(),
+                var_a: var_name(cell, is_alt, input_indices),
+                var_b: var_name(selector, is_alt, input_indices),
+            })
+            .collect(),
+        rhs_terms: vec![IRTerm {
+            coeff: BigUint::one(),
+            var: var_name(value, is_alt, input_indices),
+        }],
+    }
+}
+
+fn memory_write_constraint(
+    old_cell: usize,
+    new_cell: usize,
+    value: usize,
+    selector: usize,
+    is_alt: bool,
+    input_indices: &HashSet<usize>,
+) -> IRConstraint {
+    IRConstraint::NonLinear {
+        lhs_terms: vec![
+            IRProductTerm {
+                coeff: BigUint::one(),
+                var_a: var_name(selector, is_alt, input_indices),
+                var_b: var_name(value, is_alt, input_indices),
+            },
+            IRProductTerm {
+                coeff: neg_mod_coeff(&BigUint::one()),
+                var_a: var_name(selector, is_alt, input_indices),
+                var_b: var_name(old_cell, is_alt, input_indices),
+            },
+        ],
+        rhs_terms: vec![
+            IRTerm {
+                coeff: BigUint::one(),
+                var: var_name(new_cell, is_alt, input_indices),
+            },
+            IRTerm {
+                coeff: neg_mod_coeff(&BigUint::one()),
+                var: var_name(old_cell, is_alt, input_indices),
+            },
+        ],
+    }
+}
+
 fn boolean_wire_constraint(
     wire: usize,
     is_alt: bool,
@@ -969,8 +1367,8 @@ mod tests {
     use acir::{
         AcirField, FieldElement,
         circuit::{
-            Circuit, Opcode,
-            opcodes::{BlackBoxFuncCall, FunctionInput},
+            Circuit, Opcode, PublicInputs,
+            opcodes::{BlackBoxFuncCall, BlockId, BlockType, FunctionInput, MemOp},
         },
         native_types::{Expression, Witness},
     };
@@ -1063,6 +1461,113 @@ mod tests {
     }
 
     #[test]
+    fn linear_assertion_marks_target_known_from_public_input() {
+        let mut expression = Expression::default();
+        expression.push_addition_term(FieldElement::one(), Witness(1));
+        expression.push_addition_term(-FieldElement::one(), Witness(0));
+
+        let circuit = Circuit {
+            public_parameters: PublicInputs([Witness(0)].into_iter().collect()),
+            opcodes: vec![Opcode::AssertZero(expression)],
+            ..Circuit::<FieldElement>::default()
+        };
+
+        let model = build_model(&circuit, FixedMode::Public);
+
+        assert!(!model.input_indices.contains(&picus_wire(Witness(1))));
+        assert!(model.is_fixed_known_signal(picus_wire(Witness(1))));
+    }
+
+    #[test]
+    fn linear_knownness_propagates_through_supported_chain() {
+        let mut first = Expression::default();
+        first.push_addition_term(FieldElement::one(), Witness(1));
+        first.push_addition_term(-FieldElement::one(), Witness(0));
+
+        let mut second = Expression::default();
+        second.push_addition_term(FieldElement::one(), Witness(2));
+        second.push_addition_term(-FieldElement::from(3u32), Witness(1));
+        second.q_c = -FieldElement::from(5u32);
+
+        let circuit = Circuit {
+            public_parameters: PublicInputs([Witness(0)].into_iter().collect()),
+            opcodes: vec![Opcode::AssertZero(first), Opcode::AssertZero(second)],
+            ..Circuit::<FieldElement>::default()
+        };
+
+        let model = build_model(&circuit, FixedMode::Public);
+
+        assert!(model.is_fixed_known_signal(picus_wire(Witness(1))));
+        assert!(model.is_fixed_known_signal(picus_wire(Witness(2))));
+    }
+
+    #[test]
+    fn nonlinear_assertion_does_not_mark_target_known() {
+        let mut expression = Expression::default();
+        expression.push_multiplication_term(FieldElement::one(), Witness(1), Witness(1));
+        expression.push_addition_term(-FieldElement::one(), Witness(0));
+
+        let circuit = Circuit {
+            public_parameters: PublicInputs([Witness(0)].into_iter().collect()),
+            opcodes: vec![Opcode::AssertZero(expression)],
+            ..Circuit::<FieldElement>::default()
+        };
+
+        let model = build_model(&circuit, FixedMode::Public);
+
+        assert!(!model.is_fixed_known_signal(picus_wire(Witness(1))));
+    }
+
+    #[test]
+    fn target_constraints_slice_at_fixed_known_boundary() {
+        let mut first = Expression::default();
+        first.push_addition_term(FieldElement::one(), Witness(1));
+        first.push_addition_term(-FieldElement::one(), Witness(0));
+
+        let mut second = Expression::default();
+        second.push_addition_term(FieldElement::one(), Witness(2));
+        second.push_addition_term(-FieldElement::one(), Witness(1));
+
+        let mut boundary = Expression::default();
+        boundary.push_multiplication_term(FieldElement::one(), Witness(4), Witness(3));
+        boundary.push_multiplication_term(-FieldElement::one(), Witness(4), Witness(2));
+
+        let circuit = Circuit {
+            public_parameters: PublicInputs([Witness(0)].into_iter().collect()),
+            opcodes: vec![
+                Opcode::AssertZero(first),
+                Opcode::AssertZero(second),
+                Opcode::AssertZero(boundary),
+            ],
+            ..Circuit::<FieldElement>::default()
+        };
+
+        let model = build_model(&circuit, FixedMode::Public);
+        let (orig, alt) = model.target_constraints(Witness(3));
+
+        assert_eq!(model.orig_constraints.len(), 3);
+        assert_eq!(orig.len(), 1);
+        assert_eq!(alt.len(), 1);
+    }
+
+    #[test]
+    fn target_constraints_keep_range_auxiliary_group() {
+        let circuit = Circuit {
+            opcodes: vec![Opcode::BlackBoxFuncCall(BlackBoxFuncCall::RANGE {
+                input: FunctionInput::Witness(Witness(1)),
+                num_bits: 3,
+            })],
+            ..Circuit::<FieldElement>::default()
+        };
+
+        let model = build_model(&circuit, FixedMode::Public);
+        let (orig, alt) = model.target_constraints(Witness(1));
+
+        assert_eq!(orig.len(), 4);
+        assert_eq!(alt.len(), 4);
+    }
+
+    #[test]
     fn range_allocates_bit_decomposition_constraints() {
         let circuit = Circuit {
             opcodes: vec![Opcode::BlackBoxFuncCall(BlackBoxFuncCall::RANGE {
@@ -1130,6 +1635,76 @@ mod tests {
         assert_eq!(terms.len(), 1);
         assert_eq!(terms[0].coeff, BigUint::from(1u32));
         assert_eq!(terms[0].var, "x1");
+    }
+
+    #[test]
+    fn memory_read_with_dynamic_index_is_supported() {
+        let block_id = BlockId(0);
+        let mut read_matches_public = Expression::default();
+        read_matches_public.push_addition_term(FieldElement::one(), Witness(4));
+        read_matches_public.push_addition_term(-FieldElement::one(), Witness(0));
+
+        let mut return_matches_brillig = Expression::default();
+        return_matches_brillig.push_addition_term(FieldElement::one(), Witness(2));
+        return_matches_brillig.push_addition_term(-FieldElement::one(), Witness(3));
+
+        let circuit = Circuit {
+            public_parameters: PublicInputs([Witness(0), Witness(1)].into_iter().collect()),
+            return_values: PublicInputs([Witness(2)].into_iter().collect()),
+            opcodes: vec![
+                Opcode::MemoryInit {
+                    block_id,
+                    init: vec![Witness(3), Witness(0), Witness(0), Witness(0)],
+                    block_type: BlockType::Memory,
+                },
+                Opcode::MemoryOp {
+                    block_id,
+                    op: MemOp::read_at_mem_index(Witness(1), Witness(4)),
+                },
+                Opcode::AssertZero(read_matches_public),
+                Opcode::AssertZero(return_matches_brillig),
+            ],
+            ..Circuit::<FieldElement>::default()
+        };
+
+        let model = build_model(&circuit, FixedMode::Public);
+        let (orig, alt) = model.target_constraints(Witness(2));
+
+        assert!(model.unsupported_reasons.is_empty());
+        assert_eq!(model.n_wires, 10);
+        assert_eq!(model.orig_constraints.len(), 9);
+        assert_eq!(orig.len(), 8);
+        assert_eq!(alt.len(), 8);
+    }
+
+    #[test]
+    fn memory_write_updates_state_for_later_reads() {
+        let block_id = BlockId(0);
+        let circuit = Circuit {
+            opcodes: vec![
+                Opcode::MemoryInit {
+                    block_id,
+                    init: vec![Witness(0), Witness(1)],
+                    block_type: BlockType::Memory,
+                },
+                Opcode::MemoryOp {
+                    block_id,
+                    op: MemOp::write_to_mem_index(Witness(2), Witness(3)),
+                },
+                Opcode::MemoryOp {
+                    block_id,
+                    op: MemOp::read_at_mem_index(Witness(2), Witness(4)),
+                },
+            ],
+            ..Circuit::<FieldElement>::default()
+        };
+
+        let model = build_model(&circuit, FixedMode::Public);
+
+        assert!(model.unsupported_reasons.is_empty());
+        assert_eq!(model.n_wires, 12);
+        assert_eq!(model.orig_constraints.len(), 11);
+        assert_eq!(model.alt_constraints.len(), 11);
     }
 
     #[test]

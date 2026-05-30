@@ -1,0 +1,6 @@
+[package]
+name = "vuln_halo2_mod_gadget"
+type = "bin"
+authors = [""]
+
+[dependencies]

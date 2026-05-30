@@ -1,0 +1,7 @@
+[package]
+name = "medium_mpt_account_update_vulnerable"
+type = "bin"
+authors = [""]
+
+[dependencies]
+realistic_common = { path = "../../../realistic_common" }

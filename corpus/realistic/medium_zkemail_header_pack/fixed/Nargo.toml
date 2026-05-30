@@ -1,0 +1,7 @@
+[package]
+name = "medium_zkemail_header_pack_fixed"
+type = "bin"
+authors = [""]
+
+[dependencies]
+realistic_common = { path = "../../../realistic_common" }

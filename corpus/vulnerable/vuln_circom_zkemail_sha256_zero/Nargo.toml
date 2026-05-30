@@ -1,0 +1,6 @@
+[package]
+name = "vuln_circom_zkemail_sha256_zero"
+type = "bin"
+authors = [""]
+
+[dependencies]

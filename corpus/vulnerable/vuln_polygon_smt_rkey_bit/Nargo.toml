@@ -1,0 +1,6 @@
+[package]
+name = "vuln_polygon_smt_rkey_bit"
+type = "bin"
+authors = [""]
+
+[dependencies]

@@ -1,0 +1,6 @@
+[package]
+name = "vuln_bellperson_lurk_reduce_sym"
+type = "bin"
+authors = [""]
+
+[dependencies]

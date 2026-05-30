@@ -1,0 +1,7 @@
+case	artifact	expected_compile	scan_fixed	scan_targets	scan_solver	scan_theory	expected_scan	expected_execute_output	source_family
+compiler_symbolic_array_index_brillig_output	corpus/compiler_regression_artifacts/compiler_symbolic_array_index_brillig_output	ok	public	returns	cvc5	nia	unsafe	skip	Noir compiler / Brillig constraint check
+compiler_field_to_u128_cast_zero_branch	corpus/compiler_regression_artifacts/compiler_field_to_u128_cast_zero_branch	ok	none	returns	cvc5	ff	skip	0x01	Noir compiler / cast lowering
+compiler_field_cast_branch_division	corpus/compiler_regression_artifacts/compiler_field_cast_branch_division	ok	none	returns	cvc5	ff	skip	true	Noir compiler / cast lowering
+compiler_brillig_result_mutation	corpus/compiler_regression_artifacts/compiler_brillig_result_mutation	ok	none	returns	cvc5	ff	skip	[true]	Noir compiler / Brillig mutation
+compiler_brillig_load_store_forward_ifelse	corpus/compiler_regression_artifacts/compiler_brillig_load_store_forward_ifelse	ok	none	returns	cvc5	ff	skip	0x02	Noir compiler / Brillig optimization
+compiler_foreign_call_nested_tuple_array	corpus/compiler_regression_artifacts/compiler_foreign_call_nested_tuple_array	ok	none	returns	cvc5	ff	skip	skip	Noir compiler / foreign call heap layout

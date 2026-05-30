@@ -1,0 +1,6 @@
+[package]
+name = "vuln_aztec_nullifier_index_alias"
+type = "bin"
+authors = [""]
+
+[dependencies]

@@ -1,0 +1,6 @@
+[package]
+name = "vuln_scroll_shift_byte_binding"
+type = "bin"
+authors = [""]
+
+[dependencies]

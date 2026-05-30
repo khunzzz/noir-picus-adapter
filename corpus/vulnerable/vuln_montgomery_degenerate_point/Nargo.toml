@@ -1,0 +1,6 @@
+[package]
+name = "vuln_montgomery_degenerate_point"
+type = "bin"
+authors = [""]
+
+[dependencies]

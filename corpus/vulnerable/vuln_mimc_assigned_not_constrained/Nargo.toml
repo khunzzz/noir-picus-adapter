@@ -1,0 +1,6 @@
+[package]
+name = "vuln_mimc_assigned_not_constrained"
+type = "bin"
+authors = [""]
+
+[dependencies]

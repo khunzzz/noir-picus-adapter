@@ -1,0 +1,6 @@
+[package]
+name = "vuln_circom_decoder_onehot"
+type = "bin"
+authors = [""]
+
+[dependencies]

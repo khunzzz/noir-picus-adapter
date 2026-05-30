@@ -47,6 +47,12 @@ pub(crate) struct TargetReport {
     pub(crate) origins: Vec<TargetOrigin>,
     pub(crate) status: TargetStatus,
     #[serde(skip_serializing_if = "Option::is_none")]
+    // Number of constraints sent to the per-target SMT query after slicing.
+    // Compare with CircuitReport::*_constraint_count to see how much was cut.
+    pub(crate) query_orig_constraint_count: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) query_alt_constraint_count: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) reason: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) counterexample: Option<Counterexample>,
@@ -70,6 +76,8 @@ pub(crate) struct Counterexample {
 #[derive(Debug)]
 pub(crate) struct SolverOutcome {
     pub(crate) status: TargetStatus,
+    pub(crate) query_orig_constraint_count: Option<usize>,
+    pub(crate) query_alt_constraint_count: Option<usize>,
     pub(crate) reason: Option<String>,
     pub(crate) counterexample: Option<Counterexample>,
 }
@@ -89,6 +97,8 @@ impl TargetReport {
             alternative_var: format!("y{target_signal}"),
             origins: target.origins,
             status: outcome.status,
+            query_orig_constraint_count: outcome.query_orig_constraint_count,
+            query_alt_constraint_count: outcome.query_alt_constraint_count,
             reason: outcome.reason,
             counterexample: outcome.counterexample,
         }
@@ -104,6 +114,8 @@ impl TargetReport {
             alternative_var: format!("y{target_signal}"),
             origins: target.origins,
             status: TargetStatus::Unsupported,
+            query_orig_constraint_count: None,
+            query_alt_constraint_count: None,
             reason: Some(reason),
             counterexample: None,
         }
@@ -194,6 +206,12 @@ impl ScanReport {
                             target.witness,
                             target.target_signal
                         );
+                        if let (Some(orig), Some(alt)) = (
+                            target.query_orig_constraint_count,
+                            target.query_alt_constraint_count,
+                        ) {
+                            println!("      query constraints: orig={orig}, alt={alt}");
+                        }
                         println!("      origins:");
                         for origin in &target.origins {
                             println!("        - {}", format_origin(origin));

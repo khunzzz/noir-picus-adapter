@@ -1,0 +1,6 @@
+[package]
+name = "compiler_brillig_result_mutation"
+type = "bin"
+authors = [""]
+
+[dependencies]

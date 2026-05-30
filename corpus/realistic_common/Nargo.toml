@@ -1,0 +1,6 @@
+[package]
+name = "realistic_common"
+type = "lib"
+authors = [""]
+
+[dependencies]

@@ -1,0 +1,6 @@
+[package]
+name = "vuln_arkworks_penumbra_fixed_point_add"
+type = "bin"
+authors = [""]
+
+[dependencies]

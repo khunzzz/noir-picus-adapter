@@ -1,0 +1,6 @@
+[package]
+name = "vuln_risc0_underconstrained_division"
+type = "bin"
+authors = [""]
+
+[dependencies]

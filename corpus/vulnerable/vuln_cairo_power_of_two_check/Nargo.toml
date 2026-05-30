@@ -1,0 +1,6 @@
+[package]
+name = "vuln_cairo_power_of_two_check"
+type = "bin"
+authors = [""]
+
+[dependencies]

@@ -1,0 +1,6 @@
+[package]
+name = "vuln_halo2_call_warm_status"
+type = "bin"
+authors = [""]
+
+[dependencies]
