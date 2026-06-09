@@ -1365,7 +1365,7 @@ fn push_dependency_edge(dependency_edges: &mut Vec<Vec<usize>>, mut wires: Vec<u
     }
 }
 
-fn opcode_wires(opcode: &Opcode<FieldElement>) -> Vec<usize> {
+pub(crate) fn opcode_wires(opcode: &Opcode<FieldElement>) -> Vec<usize> {
     let mut wires = Vec::new();
     match opcode {
         Opcode::AssertZero(expression) => wires.extend(expression_wires(expression)),

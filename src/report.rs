@@ -1,6 +1,7 @@
 use color_eyre::eyre::Result;
 use serde::Serialize;
 
+use crate::debug_info::SourceLocation;
 use crate::targets::{Target, TargetOrigin};
 
 #[derive(Debug, Serialize)]
@@ -62,6 +63,23 @@ pub(crate) struct TargetReport {
     // may be spurious. Empty for fully-translated targets.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub(crate) abstraction_notes: Vec<String>,
+    // ABI-derived name of this witness (parameter path or return slot), when
+    // the artifact carries an ABI. Best-effort display sugar.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) abi_name: Option<String>,
+    // Source positions tied to this target, resolved from artifact debug
+    // symbols: where the witness is produced (Brillig call site) and where it
+    // is constrained/used. Empty for sanitized artifacts.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub(crate) source_locations: Vec<TargetSourceLocation>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct TargetSourceLocation {
+    /// What this location is: e.g. `brillig call`, `constrained at`.
+    pub(crate) role: String,
+    #[serde(flatten)]
+    pub(crate) location: SourceLocation,
 }
 
 #[derive(Clone, Copy, Debug, Serialize)]
@@ -108,6 +126,8 @@ impl TargetReport {
             reason: outcome.reason,
             counterexample: outcome.counterexample,
             abstraction_notes: Vec::new(),
+            abi_name: None,
+            source_locations: Vec::new(),
         }
     }
 
@@ -126,6 +146,8 @@ impl TargetReport {
             reason: Some(reason),
             counterexample: None,
             abstraction_notes: Vec::new(),
+            abi_name: None,
+            source_locations: Vec::new(),
         }
     }
 }
@@ -194,12 +216,25 @@ impl ScanReport {
                         .as_ref()
                         .map(|reason| format!(" ({reason})"))
                         .unwrap_or_default();
+                    let abi_name = target
+                        .abi_name
+                        .as_ref()
+                        .map(|name| format!(" [{name}]"))
+                        .unwrap_or_default();
                     println!(
-                        "    {}: {}{}",
+                        "    {}{}: {}{}",
                         target.witness,
+                        abi_name,
                         target.status.as_str(),
                         reason
                     );
+                    for source_location in &target.source_locations {
+                        println!(
+                            "      {}: {}",
+                            source_location.role,
+                            source_location.location.display()
+                        );
+                    }
                     if let Some(counterexample) = &target.counterexample {
                         println!(
                             "      counterexample: original={}, alternative={}",
