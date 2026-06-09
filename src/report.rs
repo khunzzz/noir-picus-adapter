@@ -34,6 +34,7 @@ pub(crate) struct CircuitReport {
     pub(crate) orig_constraint_count: usize,
     pub(crate) alt_constraint_count: usize,
     pub(crate) unsupported_reasons: Vec<String>,
+    pub(crate) abstracted_reasons: Vec<String>,
     pub(crate) targets: Vec<TargetReport>,
 }
 
@@ -56,6 +57,11 @@ pub(crate) struct TargetReport {
     pub(crate) reason: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) counterexample: Option<Counterexample>,
+    // Determinism-abstraction issues in this target's cone. When non-empty the
+    // verdict was computed under the abstraction: `verified` is sound, `unsafe`
+    // may be spurious. Empty for fully-translated targets.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub(crate) abstraction_notes: Vec<String>,
 }
 
 #[derive(Clone, Copy, Debug, Serialize)]
@@ -101,6 +107,7 @@ impl TargetReport {
             query_alt_constraint_count: outcome.query_alt_constraint_count,
             reason: outcome.reason,
             counterexample: outcome.counterexample,
+            abstraction_notes: Vec::new(),
         }
     }
 
@@ -118,6 +125,7 @@ impl TargetReport {
             query_alt_constraint_count: None,
             reason: Some(reason),
             counterexample: None,
+            abstraction_notes: Vec::new(),
         }
     }
 }
@@ -149,12 +157,13 @@ impl ScanReport {
             println!("Program: {}", program.name);
             for circuit in &program.circuits {
                 println!(
-                    "  Circuit #{} {}: {} target(s), {} fixed witness(es), {} unsupported issue(s)",
+                    "  Circuit #{} {}: {} target(s), {} fixed witness(es), {} unsupported issue(s), {} abstracted",
                     circuit.index,
                     circuit.name,
                     circuit.targets.len(),
                     circuit.fixed_witnesses.len(),
-                    circuit.unsupported_reasons.len()
+                    circuit.unsupported_reasons.len(),
+                    circuit.abstracted_reasons.len()
                 );
                 if verbose {
                     println!(
@@ -198,6 +207,21 @@ impl ScanReport {
                             counterexample.alternative.as_deref().unwrap_or("<missing>")
                         );
                     }
+                    if !target.abstraction_notes.is_empty() {
+                        let caveat = if matches!(target.status, TargetStatus::Unsafe) {
+                            " — unsafe may be spurious under abstraction (a verified result would be sound)"
+                        } else {
+                            ""
+                        };
+                        println!(
+                            "      note: verdict computed under determinism abstraction{caveat}"
+                        );
+                        if verbose {
+                            for abstraction_note in &target.abstraction_notes {
+                                println!("        - {abstraction_note}");
+                            }
+                        }
+                    }
                     if verbose {
                         println!(
                             "      query target: {} != {} (ACIR {} -> Picus signal {})",
@@ -221,6 +245,10 @@ impl ScanReport {
 
                 for reason in &circuit.unsupported_reasons {
                     println!("    unsupported: {reason}");
+                }
+
+                for reason in &circuit.abstracted_reasons {
+                    println!("    abstracted: {reason}");
                 }
             }
         }

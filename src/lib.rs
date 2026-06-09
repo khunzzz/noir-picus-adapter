@@ -133,14 +133,15 @@ fn scan(args: ScanArgs) -> Result<()> {
 
             let mut target_reports = Vec::new();
             for target in discovered_targets {
-                let target_unsupported_reasons =
-                    model.unsupported_reasons_for_target(target.witness);
-                let target_report = if target_unsupported_reasons.is_empty() {
-                    let label = format!("{}_{}_{}", loaded.name, circuit_name, target.witness);
+                let witness = target.witness;
+                let target_unsupported_reasons = model.unsupported_reasons_for_target(witness);
+                let mut target_report = if target_unsupported_reasons.is_empty() {
+                    let label = format!("{}_{}_{}", loaded.name, circuit_name, witness);
                     solver::solve_target(&model, &target, &solver_options, &label)?
                 } else {
                     TargetReport::unsupported(target, target_unsupported_reasons.join("; "))
                 };
+                target_report.abstraction_notes = model.abstraction_reasons_for_target(witness);
                 target_reports.push(target_report);
             }
 
@@ -159,6 +160,7 @@ fn scan(args: ScanArgs) -> Result<()> {
                 orig_constraint_count: model.orig_constraints.len(),
                 alt_constraint_count: model.alt_constraints.len(),
                 unsupported_reasons: model.unsupported_reasons,
+                abstracted_reasons: model.abstracted_reasons,
                 targets: target_reports,
             });
         }

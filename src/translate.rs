@@ -22,9 +22,11 @@ pub(crate) struct AcirPicusModel {
     pub(crate) orig_constraints: Vec<IRConstraint>,
     pub(crate) alt_constraints: Vec<IRConstraint>,
     pub(crate) unsupported_reasons: Vec<String>,
+    pub(crate) abstracted_reasons: Vec<String>,
     pub(crate) fixed_known_signals: HashSet<usize>,
     constraint_groups: Vec<ConstraintGroup>,
     unsupported_issues: Vec<UnsupportedIssue>,
+    abstracted_issues: Vec<AbstractionIssue>,
     dependency_edges: Vec<Vec<usize>>,
 }
 
@@ -36,6 +38,16 @@ pub(crate) enum FixedMode {
 
 #[derive(Clone, Debug)]
 struct UnsupportedIssue {
+    reason: String,
+    wires: Vec<usize>,
+}
+
+// A deterministic black box that we do not translate exactly, but model with a
+// determinism (uninterpreted-function) abstraction instead of blocking the
+// target. Tracked separately from unsupported issues so we can annotate any
+// target whose verdict depended on the abstraction. See SOUNDNESS.md.
+#[derive(Clone, Debug)]
+struct AbstractionIssue {
     reason: String,
     wires: Vec<usize>,
 }
@@ -88,6 +100,7 @@ pub(crate) fn build_model(
     let mut orig_constraints = Vec::new();
     let mut alt_constraints = Vec::new();
     let mut unsupported_issues = Vec::new();
+    let mut abstracted_issues = Vec::new();
     let mut dependency_edges = Vec::new();
     let mut constraint_groups = Vec::new();
     let mut next_aux_wire = max_witness_index(circuit).map_or(1, |index| index as usize + 2);
@@ -250,13 +263,41 @@ pub(crate) fn build_model(
                         alt,
                     );
                 }
-                _ => push_unsupported_issue(
-                    &mut unsupported_issues,
-                    &mut dependency_edges,
-                    opcode_index,
-                    format!("unsupported black box {}", black_box.name()),
-                    opcode_wires(opcode),
-                ),
+                // Every remaining black box is a deterministic pure function of
+                // its inputs (hashes, ECDSA, curve ops, ...). Rather than
+                // blocking the target as unsupported, abstract it: forget the
+                // function, keep only that equal inputs force equal outputs.
+                _ => match determinism_constraint_group(black_box, &input_indices) {
+                    Some((wires, orig)) => {
+                        push_dependency_edge(&mut dependency_edges, wires.clone());
+                        abstracted_issues.push(AbstractionIssue {
+                            reason: format!(
+                                "opcode {opcode_index}: deterministic black box {} modeled by \
+                                 determinism abstraction (output is a pure function of its inputs)",
+                                black_box.name()
+                            ),
+                            wires: wires.clone(),
+                        });
+                        push_constraint_group(
+                            &mut orig_constraints,
+                            &mut alt_constraints,
+                            &mut constraint_groups,
+                            wires,
+                            orig,
+                            Vec::new(),
+                        );
+                    }
+                    None => push_unsupported_issue(
+                        &mut unsupported_issues,
+                        &mut dependency_edges,
+                        opcode_index,
+                        format!(
+                            "unsupported black box {} (no outputs to abstract)",
+                            black_box.name()
+                        ),
+                        opcode_wires(opcode),
+                    ),
+                },
             },
             Opcode::BrilligCall { .. } => {}
             Opcode::MemoryOp { block_id, op } => match memory_constraint_group(
@@ -304,6 +345,10 @@ pub(crate) fn build_model(
         .iter()
         .map(|issue| issue.reason.clone())
         .collect();
+    let abstracted_reasons = abstracted_issues
+        .iter()
+        .map(|issue| issue.reason.clone())
+        .collect();
     let fixed_known_signals = infer_fixed_known_signals(circuit, &input_indices);
 
     AcirPicusModel {
@@ -312,9 +357,11 @@ pub(crate) fn build_model(
         orig_constraints,
         alt_constraints,
         unsupported_reasons,
+        abstracted_reasons,
         fixed_known_signals,
         constraint_groups,
         unsupported_issues,
+        abstracted_issues,
         dependency_edges,
     }
 }
@@ -332,6 +379,20 @@ impl AcirPicusModel {
             .filter(|issue| {
                 issue.wires.is_empty() || issue.wires.iter().any(|wire| component.contains(wire))
             })
+            .map(|issue| issue.reason.clone())
+            .collect()
+    }
+
+    /// Determinism-abstraction issues that lie in this target's cone. A verdict
+    /// for such a target is computed under the abstraction: `verified` stays
+    /// sound, but `unsafe` may be spurious (see SOUNDNESS.md). The caller
+    /// surfaces these as caveats rather than blocking the scan.
+    pub(crate) fn abstraction_reasons_for_target(&self, target: Witness) -> Vec<String> {
+        let component = self.dependency_component(target_signal(target));
+
+        self.abstracted_issues
+            .iter()
+            .filter(|issue| issue.wires.iter().any(|wire| component.contains(wire)))
             .map(|issue| issue.reason.clone())
             .collect()
     }
@@ -456,14 +517,36 @@ fn infer_fixed_known_signals(
     while changed {
         changed = false;
         for opcode in &circuit.opcodes {
-            let Opcode::AssertZero(expression) = opcode else {
-                continue;
-            };
-            let Some(wire) = single_unknown_linear_wire(expression, &known) else {
-                continue;
-            };
-            if known.insert(wire) {
-                changed = true;
+            match opcode {
+                Opcode::AssertZero(expression) => {
+                    if let Some(wire) = single_unknown_linear_wire(expression, &known)
+                        && known.insert(wire)
+                    {
+                        changed = true;
+                    }
+                }
+                Opcode::BlackBoxFuncCall(black_box) => {
+                    // Determinism (Tier 1): a black box output is a pure function
+                    // of its inputs, so once every input (and the predicate, if
+                    // any) is known, every output is uniquely determined and
+                    // becomes known too. This is unconditionally sound: it never
+                    // marks a genuinely free witness as determined.
+                    let inputs_known = black_box
+                        .get_input_witnesses()
+                        .into_iter()
+                        .all(|witness| known.contains(&picus_wire(witness)))
+                        && black_box
+                            .get_predicate()
+                            .is_none_or(|witness| known.contains(&picus_wire(witness)));
+                    if inputs_known {
+                        for witness in black_box.get_outputs_vec() {
+                            if known.insert(picus_wire(witness)) {
+                                changed = true;
+                            }
+                        }
+                    }
+                }
+                _ => {}
             }
         }
     }
@@ -1143,6 +1226,78 @@ fn memory_write_constraint(
     }
 }
 
+// Build the determinism abstraction (Tier 2) for a deterministic black box
+// `outputs = F(inputs)` we do not translate exactly. Returns the wire set and
+// one cross-copy constraint per output. `None` when there is nothing to
+// abstract (no outputs), leaving the caller to fall back to `unsupported`.
+fn determinism_constraint_group(
+    black_box: &BlackBoxFuncCall<FieldElement>,
+    input_indices: &HashSet<usize>,
+) -> Option<(Vec<usize>, Vec<IRConstraint>)> {
+    let output_wires = black_box
+        .get_outputs_vec()
+        .into_iter()
+        .map(picus_wire)
+        .collect::<Vec<_>>();
+    if output_wires.is_empty() {
+        return None;
+    }
+
+    let mut input_wires = black_box
+        .get_input_witnesses()
+        .into_iter()
+        .map(picus_wire)
+        .collect::<Vec<_>>();
+    if let Some(predicate) = black_box.get_predicate() {
+        input_wires.push(picus_wire(predicate));
+    }
+
+    let constraints = output_wires
+        .iter()
+        .map(|&output| determinism_constraint(output, &input_wires, input_indices))
+        .collect::<Vec<_>>();
+
+    let mut wires = input_wires;
+    wires.extend(output_wires);
+    Some((wires, constraints))
+}
+
+// Encode `inputs agree across the two copies => this output agrees`, i.e. the
+// determinism of `F`, without modeling `F` itself:
+//
+//   out_x = out_y  OR  in_1^x != in_1^y  OR  ...  OR  in_n^x != in_n^y
+//
+// The solution set is a superset of the real one (we keep determinism, forget
+// the value), so UNSAT / `verified` stays sound. Inputs fixed across both
+// copies share a single `x` variable, so their disjunct is dropped here and the
+// output is forced equal whenever it depends only on fixed inputs.
+fn determinism_constraint(
+    output: usize,
+    inputs: &[usize],
+    input_indices: &HashSet<usize>,
+) -> IRConstraint {
+    let mut disjuncts = vec![IRConstraint::Linear(vec![
+        IRTerm {
+            coeff: BigUint::one(),
+            var: var_name(output, false, input_indices),
+        },
+        IRTerm {
+            coeff: neg_mod_coeff(&BigUint::one()),
+            var: var_name(output, true, input_indices),
+        },
+    ])];
+
+    for &input in inputs {
+        let original = var_name(input, false, input_indices);
+        let alternative = var_name(input, true, input_indices);
+        if original != alternative {
+            disjuncts.push(IRConstraint::VarNeq(original, alternative));
+        }
+    }
+
+    IRConstraint::Or(disjuncts)
+}
+
 fn boolean_wire_constraint(
     wire: usize,
     is_alt: bool,
@@ -1383,7 +1538,7 @@ mod tests {
         AcirField, FieldElement,
         circuit::{
             Circuit, Opcode, PublicInputs,
-            opcodes::{BlackBoxFuncCall, BlockId, BlockType, FunctionInput, MemOp},
+            opcodes::{AcirFunctionId, BlackBoxFuncCall, BlockId, BlockType, FunctionInput, MemOp},
         },
         native_types::{Expression, Witness},
     };
@@ -1392,11 +1547,16 @@ mod tests {
 
     use super::{FixedMode, build_model, expression_to_ir, picus_wire};
 
-    fn unsupported_blake2s_opcode(input: Witness) -> Opcode<FieldElement> {
-        Opcode::BlackBoxFuncCall(BlackBoxFuncCall::Blake2s {
-            inputs: vec![FunctionInput::Witness(input)],
-            outputs: Box::new(std::array::from_fn(|index| Witness(100 + index as u32))),
-        })
+    // A genuinely unsupported opcode (a call to a separate ACIR circuit), used
+    // to exercise the unsupported-blocking path now that deterministic black
+    // boxes are abstracted rather than blocked.
+    fn unsupported_call_opcode(input: Witness) -> Opcode<FieldElement> {
+        Opcode::Call {
+            id: AcirFunctionId(0),
+            inputs: vec![input],
+            outputs: vec![Witness(50)],
+            predicate: Expression::default(),
+        }
     }
 
     #[test]
@@ -1880,7 +2040,7 @@ mod tests {
     #[test]
     fn unrelated_unsupported_opcode_does_not_block_target() {
         let circuit = Circuit {
-            opcodes: vec![unsupported_blake2s_opcode(Witness(9))],
+            opcodes: vec![unsupported_call_opcode(Witness(9))],
             ..Circuit::<FieldElement>::default()
         };
 
@@ -1899,7 +2059,7 @@ mod tests {
         let circuit = Circuit {
             opcodes: vec![
                 Opcode::AssertZero(expression),
-                unsupported_blake2s_opcode(Witness(9)),
+                unsupported_call_opcode(Witness(9)),
             ],
             ..Circuit::<FieldElement>::default()
         };
@@ -1919,7 +2079,7 @@ mod tests {
             private_parameters: [Witness(0)].into_iter().collect(),
             opcodes: vec![
                 Opcode::AssertZero(expression),
-                unsupported_blake2s_opcode(Witness(0)),
+                unsupported_call_opcode(Witness(0)),
             ],
             ..Circuit::<FieldElement>::default()
         };
@@ -1954,9 +2114,9 @@ mod soundness_tests {
     use acir::{
         AcirField, FieldElement,
         circuit::{
-            Circuit, Opcode,
+            Circuit, Opcode, PublicInputs,
             brillig::{BrilligFunctionId, BrilligInputs, BrilligOutputs},
-            opcodes::{BlackBoxFuncCall, BlockId, BlockType, FunctionInput, MemOp},
+            opcodes::{AcirFunctionId, BlackBoxFuncCall, BlockId, BlockType, FunctionInput, MemOp},
         },
         native_types::{Expression, Witness},
     };
@@ -1964,7 +2124,7 @@ mod soundness_tests {
     use num_traits::Zero;
     use picus_smt::query::{IRConstraint, IRProductTerm, IRTerm};
 
-    use super::{FixedMode, build_model};
+    use super::{FixedMode, build_model, picus_wire};
 
     type Assignment = HashMap<String, BigUint>;
 
@@ -1982,6 +2142,11 @@ mod soundness_tests {
 
     fn set_wire(map: &mut Assignment, wire: usize, value: u64) {
         map.insert(format!("x{wire}"), BigUint::from(value));
+    }
+
+    /// Set an arbitrary SMT variable (e.g. a `y*` second-copy wire) directly.
+    fn set_var(map: &mut Assignment, name: &str, value: u64) {
+        map.insert(name.to_owned(), BigUint::from(value));
     }
 
     /// Set `n` consecutive aux wires starting at `start` to the LSB-first bit
@@ -2018,9 +2183,10 @@ mod soundness_tests {
 
     /// Evaluate a single IR constraint against an assignment.
     /// `Linear(t)` means `sum(t) == 0`; `NonLinear{lhs, rhs}` means
-    /// `sum(lhs products) == sum(rhs linear)` (i.e. `A*B = C`). The `Or` /
-    /// `VarEq` / `VarNeq` variants are never emitted by this translation, so
-    /// encountering one is itself a bug.
+    /// `sum(lhs products) == sum(rhs linear)` (i.e. `A*B = C`). `Or` holds if any
+    /// disjunct holds; `VarNeq(a, b)` holds iff the two variables differ;
+    /// `VarEq(v, c)` iff `v == c`. The determinism abstraction emits `Or` /
+    /// `VarNeq`; the other variants round out the evaluator.
     fn constraint_holds(
         constraint: &IRConstraint,
         assignment: &Assignment,
@@ -2035,7 +2201,11 @@ mod soundness_tests {
                 product_sum(lhs_terms, assignment, modulus)
                     == linear_sum(rhs_terms, assignment, modulus)
             }
-            other => panic!("translation emitted an unexpected IR constraint variant: {other:?}"),
+            IRConstraint::Or(subs) => subs
+                .iter()
+                .any(|sub| constraint_holds(sub, assignment, modulus)),
+            IRConstraint::VarNeq(a, b) => var(assignment, a) != var(assignment, b),
+            IRConstraint::VarEq(name, value) => var(assignment, name) == value,
         }
     }
 
@@ -2050,11 +2220,26 @@ mod soundness_tests {
             .all(|constraint| constraint_holds(constraint, assignment, modulus))
     }
 
-    fn unsupported_blake2s(input: Witness) -> Opcode<FieldElement> {
+    // A deterministic black box (Blake2s) used to exercise the determinism
+    // abstraction. `first_output` controls where its 32 output witnesses start.
+    fn blake2s_opcode(input: Witness, first_output: u32) -> Opcode<FieldElement> {
         Opcode::BlackBoxFuncCall(BlackBoxFuncCall::Blake2s {
             inputs: vec![FunctionInput::Witness(input)],
-            outputs: Box::new(std::array::from_fn(|index| Witness(100 + index as u32))),
+            outputs: Box::new(std::array::from_fn(|index| {
+                Witness(first_output + index as u32)
+            })),
         })
+    }
+
+    // A genuinely unsupported opcode (call to a separate ACIR circuit) for the
+    // unsupported-blocking boundary tests.
+    fn unsupported_call_opcode(input: Witness) -> Opcode<FieldElement> {
+        Opcode::Call {
+            id: AcirFunctionId(0),
+            inputs: vec![input],
+            outputs: vec![Witness(60)],
+            predicate: Expression::default(),
+        }
     }
 
     #[test]
@@ -2360,7 +2545,7 @@ mod soundness_tests {
                     outputs: vec![BrilligOutputs::Simple(target)],
                     predicate: Expression::default(),
                 },
-                unsupported_blake2s(Witness(9)),
+                unsupported_call_opcode(Witness(9)),
             ],
             ..Circuit::<FieldElement>::default()
         };
@@ -2385,7 +2570,10 @@ mod soundness_tests {
         link.push_addition_term(-FieldElement::one(), Witness(9));
 
         let circuit = Circuit {
-            opcodes: vec![Opcode::AssertZero(link), unsupported_blake2s(Witness(9))],
+            opcodes: vec![
+                Opcode::AssertZero(link),
+                unsupported_call_opcode(Witness(9)),
+            ],
             ..Circuit::<FieldElement>::default()
         };
         let model = build_model(&circuit, FixedMode::AllParams);
@@ -2395,5 +2583,104 @@ mod soundness_tests {
             1,
             "an unsupported opcode linked to the target via AssertZero must block it"
         );
+    }
+
+    #[test]
+    fn deterministic_blackbox_with_fixed_inputs_marks_outputs_known() {
+        // Tier 1: Blake2s of a public (fixed) input. Determinism makes every
+        // output a known signal, so a downstream target is verified without a
+        // solver call. The black box is abstracted, not blocked as unsupported.
+        let circuit = Circuit {
+            public_parameters: PublicInputs([Witness(0)].into_iter().collect()),
+            opcodes: vec![blake2s_opcode(Witness(0), 100)],
+            ..Circuit::<FieldElement>::default()
+        };
+        let model = build_model(&circuit, FixedMode::Public);
+
+        assert!(model.is_fixed_known_signal(picus_wire(Witness(100))));
+        assert!(model.is_fixed_known_signal(picus_wire(Witness(131))));
+        assert!(model.unsupported_reasons.is_empty());
+        assert_eq!(model.abstracted_reasons.len(), 1);
+    }
+
+    #[test]
+    fn deterministic_blackbox_with_free_input_does_not_mark_outputs_known() {
+        // Tier 1 must not over-claim: if the input is a free witness (not fixed),
+        // the output is genuinely undetermined and must NOT be marked known.
+        let circuit = Circuit {
+            opcodes: vec![blake2s_opcode(Witness(0), 100)],
+            ..Circuit::<FieldElement>::default()
+        };
+        let model = build_model(&circuit, FixedMode::Public);
+
+        assert!(!model.is_fixed_known_signal(picus_wire(Witness(100))));
+    }
+
+    #[test]
+    fn determinism_constraint_solution_set_matches_determinism() {
+        // Tier 2: the emitted cross-copy constraint for a black box output must
+        // accept a self-composition assignment iff `inputs agree => output
+        // agrees`. Blake2s(W0)->W100.. with W0 free, so the first emitted
+        // constraint is Or(x101 = y101, x1 != y1) over input wire 1, output 101.
+        let circuit = Circuit {
+            opcodes: vec![blake2s_opcode(Witness(0), 100)],
+            ..Circuit::<FieldElement>::default()
+        };
+        let model = build_model(&circuit, FixedMode::Public);
+        let modulus = modulus();
+        let determinism = &model.orig_constraints[0];
+
+        for input_x in 0..3u64 {
+            for input_y in 0..3u64 {
+                for output_x in 0..3u64 {
+                    for output_y in 0..3u64 {
+                        let mut assignment = Assignment::new();
+                        set_var(&mut assignment, "x1", input_x);
+                        set_var(&mut assignment, "y1", input_y);
+                        set_var(&mut assignment, "x101", output_x);
+                        set_var(&mut assignment, "y101", output_y);
+
+                        let ground_truth = input_x != input_y || output_x == output_y;
+                        assert_eq!(
+                            constraint_holds(determinism, &assignment, &modulus),
+                            ground_truth,
+                            "determinism disagrees at in=({input_x},{input_y}), \
+                             out=({output_x},{output_y})"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn deterministic_blackbox_annotates_but_does_not_block_target() {
+        // A target linked to a black box output is scanned (not blocked) but
+        // flagged as computed under the determinism abstraction.
+        let mut link = Expression::default();
+        link.push_addition_term(FieldElement::one(), Witness(1));
+        link.push_addition_term(-FieldElement::one(), Witness(100));
+
+        let circuit = Circuit {
+            opcodes: vec![blake2s_opcode(Witness(0), 100), Opcode::AssertZero(link)],
+            ..Circuit::<FieldElement>::default()
+        };
+        let model = build_model(&circuit, FixedMode::Public);
+
+        assert!(model.unsupported_reasons_for_target(Witness(1)).is_empty());
+        assert_eq!(model.abstraction_reasons_for_target(Witness(1)).len(), 1);
+    }
+
+    #[test]
+    fn unrelated_deterministic_blackbox_does_not_annotate_target() {
+        // The abstraction caveat is scoped to the cone: an unrelated black box
+        // must not flag a target it cannot influence.
+        let circuit = Circuit {
+            opcodes: vec![blake2s_opcode(Witness(9), 100)],
+            ..Circuit::<FieldElement>::default()
+        };
+        let model = build_model(&circuit, FixedMode::Public);
+
+        assert!(model.abstraction_reasons_for_target(Witness(1)).is_empty());
     }
 }
