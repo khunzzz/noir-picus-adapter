@@ -747,8 +747,10 @@ name = "noir-picus-adapter"
 version = "0.1.0"
 dependencies = [
  "acir",
+ "base64",
  "clap",
  "color-eyre",
+ "flate2",
  "num-bigint",
  "num-traits",
  "picus-smt",

@@ -11,8 +11,10 @@ name = "noir-picus-adapter"
 path = "src/main.rs"
 
 [dependencies]
+base64 = "0.22"
 clap = { version = "4", features = ["derive", "env"] }
 color-eyre = "0.6"
+flate2 = "1"
 num-bigint = "0.4"
 num-traits = "0.2"
 serde = { version = "1", features = ["derive", "rc"] }
