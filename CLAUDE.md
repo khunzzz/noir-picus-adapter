@@ -123,8 +123,15 @@ decomposition, widths < field bits). `BrilligCall` outputs are treated as
 nondeterministic and are valid check targets. There is partial `MemoryOp` /
 `MemoryInit` handling (see `memory_*` functions).
 
-Anything else (other blackbox calls, ACIR `Call`, unsupported memory patterns)
-records an `UnsupportedIssue` and may block affected targets.
+Other blackbox calls (hashes, ECDSA, curve ops, ...) are **deterministic pure
+functions** and are handled by the *determinism abstraction* rather than blocked:
+if all inputs are fixed-known the outputs become known (`infer_fixed_known_signals`,
+Tier 1); otherwise each output gets a cross-copy constraint
+`out_x = out_y ∨ (some input differs)` (`determinism_constraint`, Tier 2). This
+keeps `verified` sound but a resulting `unsafe` may be spurious, so affected
+targets are flagged (`abstracted_reasons` / `abstraction_notes`). See
+`SOUNDNESS.md`. Only `Opcode::Call` and unsupported memory patterns still record
+an `UnsupportedIssue` and may block affected targets.
 
 ## Examples (`examples/`)
 
