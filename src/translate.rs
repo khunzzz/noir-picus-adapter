@@ -45,13 +45,17 @@ mod tests;
 pub(crate) use ir::{picus_wire, target_signal};
 pub(crate) use wires::opcode_wires;
 
-use bitwise::{BitwiseOp, bitwise_constraint_group};
+use bitwise::{BitwiseCall, BitwiseOp, bitwise_constraint_group};
 use determinism::determinism_constraint_group;
 use expr::expression_to_ir;
 use known::infer_fixed_known_signals;
 use memory::memory_constraint_group;
 use range::{allocate_range_aux_wires, range_constraints};
 use wires::{expression_wires, function_input_wires, max_witness_index};
+
+/// One translated opcode: the wires it touches plus the constraints emitted
+/// for the original and alternative self-composition copies.
+type TranslatedGroup = Result<(Vec<usize>, Vec<IRConstraint>, Vec<IRConstraint>), String>;
 
 #[derive(Clone, Debug)]
 pub(crate) struct AcirPicusModel {
@@ -151,51 +155,26 @@ pub(crate) fn build_model(
                     rhs,
                     num_bits,
                     output,
-                } => {
-                    match bitwise_constraint_group(
-                        BitwiseOp::And,
-                        *lhs,
-                        *rhs,
-                        *output,
-                        *num_bits,
-                        &mut next_aux_wire,
-                        &input_indices,
-                    ) {
-                        Ok((wires, orig, alt)) => {
-                            push_dependency_edge(&mut dependency_edges, wires.clone());
-                            push_constraint_group(
-                                &mut orig_constraints,
-                                &mut alt_constraints,
-                                &mut constraint_groups,
-                                wires,
-                                orig,
-                                alt,
-                            );
-                        }
-                        Err(reason) => push_unsupported_issue(
-                            &mut unsupported_issues,
-                            &mut dependency_edges,
-                            opcode_index,
-                            reason,
-                            opcode_wires(opcode),
-                        ),
-                    }
                 }
-                BlackBoxFuncCall::XOR {
+                | BlackBoxFuncCall::XOR {
                     lhs,
                     rhs,
                     num_bits,
                     output,
                 } => {
-                    match bitwise_constraint_group(
-                        BitwiseOp::Xor,
-                        *lhs,
-                        *rhs,
-                        *output,
-                        *num_bits,
-                        &mut next_aux_wire,
-                        &input_indices,
-                    ) {
+                    let op = if matches!(black_box, BlackBoxFuncCall::AND { .. }) {
+                        BitwiseOp::And
+                    } else {
+                        BitwiseOp::Xor
+                    };
+                    let call = BitwiseCall {
+                        op,
+                        lhs: *lhs,
+                        rhs: *rhs,
+                        output: *output,
+                        num_bits: *num_bits,
+                    };
+                    match bitwise_constraint_group(&call, &mut next_aux_wire, &input_indices) {
                         Ok((wires, orig, alt)) => {
                             push_dependency_edge(&mut dependency_edges, wires.clone());
                             push_constraint_group(

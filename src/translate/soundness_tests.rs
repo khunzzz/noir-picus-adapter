@@ -93,11 +93,7 @@ fn product_sum(terms: &[IRProductTerm], assignment: &Assignment, modulus: &BigUi
 /// disjunct holds; `VarNeq(a, b)` holds iff the two variables differ;
 /// `VarEq(v, c)` iff `v == c`. The determinism abstraction emits `Or` /
 /// `VarNeq`; the other variants round out the evaluator.
-fn constraint_holds(
-    constraint: &IRConstraint,
-    assignment: &Assignment,
-    modulus: &BigUint,
-) -> bool {
+fn constraint_holds(constraint: &IRConstraint, assignment: &Assignment, modulus: &BigUint) -> bool {
     match constraint {
         IRConstraint::Linear(terms) => linear_sum(terms, assignment, modulus).is_zero(),
         IRConstraint::NonLinear {
@@ -116,11 +112,7 @@ fn constraint_holds(
 }
 
 /// True iff every constraint in the first ("x") copy holds for `assignment`.
-fn orig_holds(
-    constraints: &[IRConstraint],
-    assignment: &Assignment,
-    modulus: &BigUint,
-) -> bool {
+fn orig_holds(constraints: &[IRConstraint], assignment: &Assignment, modulus: &BigUint) -> bool {
     constraints
         .iter()
         .all(|constraint| constraint_holds(constraint, assignment, modulus))

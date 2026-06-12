@@ -12,6 +12,7 @@ use num_bigint::BigUint;
 use num_traits::{One, Zero};
 use picus_smt::query::{IRConstraint, IRProductTerm, IRTerm};
 
+use super::TranslatedGroup;
 use super::ir::{boolean_wire_constraint, neg_mod_coeff, picus_wire, var_name};
 
 pub(super) fn memory_constraint_group(
@@ -20,7 +21,7 @@ pub(super) fn memory_constraint_group(
     memory_blocks: &mut HashMap<BlockId, Vec<usize>>,
     next_aux_wire: &mut usize,
     input_indices: &HashSet<usize>,
-) -> Result<(Vec<usize>, Vec<IRConstraint>, Vec<IRConstraint>), String> {
+) -> TranslatedGroup {
     let cells = memory_blocks
         .get(&block_id)
         .cloned()

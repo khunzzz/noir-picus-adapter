@@ -3,15 +3,12 @@
 
 use std::collections::HashSet;
 
-use acir::{
-    AcirField, FieldElement,
-    circuit::opcodes::FunctionInput,
-    native_types::Witness,
-};
+use acir::{AcirField, FieldElement, circuit::opcodes::FunctionInput, native_types::Witness};
 use num_bigint::BigUint;
 use num_traits::{One, Zero};
 use picus_smt::query::{IRConstraint, IRProductTerm, IRTerm};
 
+use super::TranslatedGroup;
 use super::ir::{field_to_biguint, neg_mod_coeff, picus_wire, var_name};
 use super::range::{allocate_range_aux_wires, range_constraints};
 use super::wires::function_input_wires;
@@ -20,6 +17,16 @@ use super::wires::function_input_wires;
 pub(super) enum BitwiseOp {
     And,
     Xor,
+}
+
+/// The operands of one `AND`/`XOR` black box call.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct BitwiseCall {
+    pub(super) op: BitwiseOp,
+    pub(super) lhs: FunctionInput<FieldElement>,
+    pub(super) rhs: FunctionInput<FieldElement>,
+    pub(super) output: Witness,
+    pub(super) num_bits: u32,
 }
 
 #[derive(Clone, Debug)]
@@ -36,38 +43,16 @@ enum BitRef {
 }
 
 pub(super) fn bitwise_constraint_group(
-    op: BitwiseOp,
-    lhs: FunctionInput<FieldElement>,
-    rhs: FunctionInput<FieldElement>,
-    output: Witness,
-    num_bits: u32,
+    call: &BitwiseCall,
     next_aux_wire: &mut usize,
     input_indices: &HashSet<usize>,
-) -> Result<(Vec<usize>, Vec<IRConstraint>, Vec<IRConstraint>), String> {
-    let aux_wires = allocate_bitwise_aux_wires(op, lhs, rhs, output, num_bits, next_aux_wire)?;
-    let orig = bitwise_constraints(
-        op,
-        lhs,
-        rhs,
-        output,
-        num_bits,
-        &aux_wires,
-        false,
-        input_indices,
-    )?;
-    let alt = bitwise_constraints(
-        op,
-        lhs,
-        rhs,
-        output,
-        num_bits,
-        &aux_wires,
-        true,
-        input_indices,
-    )?;
-    let mut wires = function_input_wires(&lhs);
-    wires.extend(function_input_wires(&rhs));
-    wires.push(picus_wire(output));
+) -> TranslatedGroup {
+    let aux_wires = allocate_bitwise_aux_wires(call, next_aux_wire)?;
+    let orig = bitwise_constraints(call, &aux_wires, false, input_indices)?;
+    let alt = bitwise_constraints(call, &aux_wires, true, input_indices)?;
+    let mut wires = function_input_wires(&call.lhs);
+    wires.extend(function_input_wires(&call.rhs));
+    wires.push(picus_wire(call.output));
     wires.extend(aux_wires.lhs.iter().copied());
     wires.extend(aux_wires.rhs.iter().copied());
     wires.extend(aux_wires.output.iter().copied());
@@ -76,26 +61,23 @@ pub(super) fn bitwise_constraint_group(
 }
 
 fn allocate_bitwise_aux_wires(
-    op: BitwiseOp,
-    lhs: FunctionInput<FieldElement>,
-    rhs: FunctionInput<FieldElement>,
-    output: Witness,
-    num_bits: u32,
+    call: &BitwiseCall,
     next_aux_wire: &mut usize,
 ) -> Result<BitwiseAuxWires, String> {
+    let num_bits = call.num_bits;
     if num_bits >= FieldElement::max_num_bits() {
         return Err(format!(
             "unsupported {} width {num_bits}: bitwise opcodes require explicit bit decomposition",
-            bitwise_op_name(op)
+            bitwise_op_name(call.op)
         ));
     }
 
     let mut local_next_aux_wire = *next_aux_wire;
     let aux_wires = BitwiseAuxWires {
-        lhs: allocate_range_aux_wires(lhs, num_bits, &mut local_next_aux_wire)?,
-        rhs: allocate_range_aux_wires(rhs, num_bits, &mut local_next_aux_wire)?,
+        lhs: allocate_range_aux_wires(call.lhs, num_bits, &mut local_next_aux_wire)?,
+        rhs: allocate_range_aux_wires(call.rhs, num_bits, &mut local_next_aux_wire)?,
         output: allocate_range_aux_wires(
-            FunctionInput::Witness(output),
+            FunctionInput::Witness(call.output),
             num_bits,
             &mut local_next_aux_wire,
         )?,
@@ -105,45 +87,46 @@ fn allocate_bitwise_aux_wires(
 }
 
 fn bitwise_constraints(
-    op: BitwiseOp,
-    lhs: FunctionInput<FieldElement>,
-    rhs: FunctionInput<FieldElement>,
-    output: Witness,
-    num_bits: u32,
+    call: &BitwiseCall,
     aux_wires: &BitwiseAuxWires,
     is_alt: bool,
     input_indices: &HashSet<usize>,
 ) -> Result<Vec<IRConstraint>, String> {
+    let num_bits = call.num_bits;
     let mut constraints = Vec::new();
     constraints.extend(range_constraints(
-        lhs,
+        call.lhs,
         num_bits,
         &aux_wires.lhs,
         is_alt,
         input_indices,
     )?);
     constraints.extend(range_constraints(
-        rhs,
+        call.rhs,
         num_bits,
         &aux_wires.rhs,
         is_alt,
         input_indices,
     )?);
     constraints.extend(range_constraints(
-        FunctionInput::Witness(output),
+        FunctionInput::Witness(call.output),
         num_bits,
         &aux_wires.output,
         is_alt,
         input_indices,
     )?);
 
-    let lhs_bits = input_bit_refs(lhs, num_bits, &aux_wires.lhs)?;
-    let rhs_bits = input_bit_refs(rhs, num_bits, &aux_wires.rhs)?;
-    let output_bits = input_bit_refs(FunctionInput::Witness(output), num_bits, &aux_wires.output)?;
+    let lhs_bits = input_bit_refs(call.lhs, num_bits, &aux_wires.lhs)?;
+    let rhs_bits = input_bit_refs(call.rhs, num_bits, &aux_wires.rhs)?;
+    let output_bits = input_bit_refs(
+        FunctionInput::Witness(call.output),
+        num_bits,
+        &aux_wires.output,
+    )?;
 
     for ((lhs_bit, rhs_bit), output_bit) in lhs_bits.into_iter().zip(rhs_bits).zip(output_bits) {
         constraints.push(bitwise_bit_constraint(
-            op,
+            call.op,
             lhs_bit,
             rhs_bit,
             output_bit,
