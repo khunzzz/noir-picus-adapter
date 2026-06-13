@@ -38,7 +38,7 @@ Result interpretation:
 
 ```bash
 cargo build                 # first build is SLOW: picus-smt builds cvc5 if needed
-cargo test                  # unit tests live in src/translate.rs (#[cfg(test)])
+cargo test                  # unit tests live in src/translate/{tests,soundness_tests}.rs
 cargo fmt                    # no custom rustfmt.toml; use defaults
 cargo clippy
 
@@ -82,20 +82,20 @@ One subcommand: `scan` (defined in `src/lib.rs`).
 | `lib.rs` | CLI parsing (clap), `scan` driver, CLI-enum ↔ internal-enum conversions, report assembly. |
 | `artifact.rs` | Load/deserialize Noir artifact JSON. Handles both `ProgramArtifact` (single program) and `ContractArtifact` (multiple functions → one `LoadedProgram` each). |
 | `targets.rs` | Discover target witnesses: return values and `BrilligCall` outputs (`Simple`/`Array`), tagged with `TargetOrigin`. |
-| `translate.rs` | **Core.** ACIR→Picus IR translation, cone-of-influence slicing, fixed-known-signal propagation, unsupported-opcode tracking. Largest file; unit tests at the bottom. |
+| `translate.rs` + `translate/` | **Core.** ACIR→Picus IR translation. The root module owns `AcirPicusModel`, the `build_model` per-opcode driver, cone-of-influence slicing and unsupported-opcode tracking. Per-opcode emission lives in submodules: `expr` (AssertZero), `range`, `bitwise` (AND/XOR), `memory`, `determinism` (Tier-2 abstraction), `known` (fixed-known propagation, Tier 1), `ir` (wire mapping / `var_name` / coefficient helpers), `wires` (wire enumeration). Tests: `translate/tests.rs` (IR shape) and `translate/soundness_tests.rs` (differential, solution sets). |
 | `solver.rs` | Build the `UniquenessQuery`, short-circuit trivially-verified targets, run the Picus backend, optional SMT dump, map `SolverResult`→`TargetReport`. |
 | `report.rs` | Serializable report types (`ScanReport` → `ProgramReport` → `CircuitReport` → `TargetReport`), `TargetStatus` enum, human + JSON printers. |
 
 ## Key conventions and invariants
 
-These are easy to get wrong — respect them when editing `translate.rs`/`solver.rs`:
+These are easy to get wrong — respect them when editing `translate/`/`solver.rs`:
 
 - **Witness → Picus wire mapping**: `picus_wire(w) = w.witness_index() + 1`.
   **Wire `0` is reserved** as the constant signal and is always an input. ACIR
   witness `wN` becomes Picus signal `N+1`. `target_signal == picus_wire`.
 - **Self-composition naming**: the first copy uses `x*` variables, the second
   uses `y*`. **Fixed/input wires stay `x*` in both copies** (they are shared).
-  `var_name()` in `translate.rs` enforces this; counterexamples read `x{sig}` /
+  `var_name()` in `translate/ir.rs` enforces this; counterexamples read `x{sig}` /
   `y{sig}` (see `solver.rs::counterexample`).
 - **Constraint groups are indivisible.** One ACIR opcode may expand to several
   IR constraints (RANGE/AND/XOR allocate aux bit-wires). `push_constraint_group`
@@ -180,7 +180,8 @@ sets stay in sync — keep TSVs aligned when adding cases.
   push with `git push -u origin <branch>`. Do NOT open a PR unless explicitly
   asked. `.gitignore` excludes `target/` and `examples/smt/`.
 - When changing translation semantics, **add/adjust the unit tests** in
-  `src/translate.rs` and, if behavior is observable end-to-end, verify against
+  `src/translate/tests.rs` (and `soundness_tests.rs` for solution-set changes)
+  and, if behavior is observable end-to-end, verify against
   the relevant `examples/` or `corpus/` expectations.
 - There is currently **no CI workflow** (`.github/` is absent). `cargo build`,
   `cargo test`, `cargo fmt`, `cargo clippy`, and the corpus scripts are the local

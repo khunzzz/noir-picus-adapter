@@ -252,8 +252,9 @@ impl ProgramDebugData {
         decoder
             .read_to_end(&mut json)
             .map_err(|error| format!("debug_symbols failed to inflate: {error}"))?;
-        let raw: RawProgramDebugInfo = serde_json::from_slice(&json)
-            .map_err(|error| format!("debug_symbols JSON does not match expected shape: {error}"))?;
+        let raw: RawProgramDebugInfo = serde_json::from_slice(&json).map_err(|error| {
+            format!("debug_symbols JSON does not match expected shape: {error}")
+        })?;
 
         let files = file_map
             .into_iter()
@@ -446,7 +447,10 @@ mod tests {
         let names: Vec<_> = (0..6)
             .map(|index| naming.parameter_name(index).unwrap().to_owned())
             .collect();
-        assert_eq!(names, ["a", "arr[0]", "arr[1]", "s.x", "s.flags.0", "s.flags.1"]);
+        assert_eq!(
+            names,
+            ["a", "arr[0]", "arr[1]", "s.x", "s.flags.0", "s.flags.1"]
+        );
         assert_eq!(naming.return_name(0), Some("return[0]"));
         assert_eq!(naming.return_name(1), Some("return[1]"));
         assert_eq!(naming.return_name(2), None);
