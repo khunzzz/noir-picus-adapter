@@ -30,12 +30,12 @@ use num_bigint::BigUint;
 use num_traits::Zero;
 use picus_smt::query::{IRConstraint, IRProductTerm, IRTerm};
 
-use super::{FixedMode, build_model, picus_wire};
+use super::{FixedMode, ModelOptions, build_model, picus_wire};
 
 type Assignment = HashMap<String, BigUint>;
 
 fn modulus() -> BigUint {
-    FieldElement::modulus()
+    super::field_modulus()
 }
 
 /// Build an assignment over the first ("x") self-composition copy. Wire 0 is
@@ -133,7 +133,7 @@ fn blake2s_opcode(input: Witness, first_output: u32) -> Opcode<FieldElement> {
 // unsupported-blocking boundary tests.
 fn unsupported_call_opcode(input: Witness) -> Opcode<FieldElement> {
     Opcode::Call {
-        id: AcirFunctionId(0),
+        id: AcirFunctionId::new(0),
         inputs: vec![input],
         outputs: vec![Witness(60)],
         predicate: Expression::default(),
@@ -151,7 +151,13 @@ fn linear_assert_zero_solution_set_matches_acir() {
         opcodes: vec![Opcode::AssertZero(expression)],
         ..Circuit::<FieldElement>::default()
     };
-    let model = build_model(&circuit, FixedMode::Public);
+    let model = build_model(
+        &circuit,
+        ModelOptions {
+            fixed_mode: FixedMode::Public,
+            ..ModelOptions::default()
+        },
+    );
     let modulus = modulus();
 
     for v1 in 0..6u64 {
@@ -180,7 +186,13 @@ fn nonlinear_assert_zero_solution_set_matches_acir() {
         opcodes: vec![Opcode::AssertZero(expression)],
         ..Circuit::<FieldElement>::default()
     };
-    let model = build_model(&circuit, FixedMode::Public);
+    let model = build_model(
+        &circuit,
+        ModelOptions {
+            fixed_mode: FixedMode::Public,
+            ..ModelOptions::default()
+        },
+    );
     let modulus = modulus();
 
     for v1 in 0..4u64 {
@@ -215,7 +227,13 @@ fn range_solution_set_matches_acir() {
         })],
         ..Circuit::<FieldElement>::default()
     };
-    let model = build_model(&circuit, FixedMode::Public);
+    let model = build_model(
+        &circuit,
+        ModelOptions {
+            fixed_mode: FixedMode::Public,
+            ..ModelOptions::default()
+        },
+    );
     let modulus = modulus();
 
     for value in 0..(1u64 << (num_bits + 1)) {
@@ -270,7 +288,13 @@ fn bitwise_solution_set_matches_acir(is_and: bool) {
         opcodes: vec![Opcode::BlackBoxFuncCall(black_box)],
         ..Circuit::<FieldElement>::default()
     };
-    let model = build_model(&circuit, FixedMode::Public);
+    let model = build_model(
+        &circuit,
+        ModelOptions {
+            fixed_mode: FixedMode::Public,
+            ..ModelOptions::default()
+        },
+    );
     let modulus = modulus();
     let limit = 1u64 << num_bits;
 
@@ -302,7 +326,7 @@ fn bitwise_solution_set_matches_acir(is_and: bool) {
 fn memory_read_solution_set_matches_acir_and_forces_index_in_bounds() {
     // Array [c0, c1] in block 0; read at dynamic index Witness(2)->x3 into
     // value Witness(3)->x4. cells: x1, x2; selectors: x5, x6.
-    let block_id = BlockId(0);
+    let block_id = BlockId::new(0);
     let circuit = Circuit {
         opcodes: vec![
             Opcode::MemoryInit {
@@ -317,7 +341,13 @@ fn memory_read_solution_set_matches_acir_and_forces_index_in_bounds() {
         ],
         ..Circuit::<FieldElement>::default()
     };
-    let model = build_model(&circuit, FixedMode::Public);
+    let model = build_model(
+        &circuit,
+        ModelOptions {
+            fixed_mode: FixedMode::Public,
+            ..ModelOptions::default()
+        },
+    );
     let modulus = modulus();
     let cells = [7u64, 9u64];
 
@@ -374,7 +404,7 @@ fn memory_read_solution_set_matches_acir_and_forces_index_in_bounds() {
 fn memory_write_solution_set_matches_acir() {
     // Array [c0, c1] in block 0; write value Witness(3)->x4 at index
     // Witness(2)->x3. cells: x1, x2; selectors: x5, x6; new cells: x7, x8.
-    let block_id = BlockId(0);
+    let block_id = BlockId::new(0);
     let circuit = Circuit {
         opcodes: vec![
             Opcode::MemoryInit {
@@ -389,7 +419,13 @@ fn memory_write_solution_set_matches_acir() {
         ],
         ..Circuit::<FieldElement>::default()
     };
-    let model = build_model(&circuit, FixedMode::Public);
+    let model = build_model(
+        &circuit,
+        ModelOptions {
+            fixed_mode: FixedMode::Public,
+            ..ModelOptions::default()
+        },
+    );
     let modulus = modulus();
     let cells = [7u64, 9u64];
     let write_value = 3u64;
@@ -438,7 +474,7 @@ fn unsupported_opcode_feeding_only_brillig_hint_does_not_block_target() {
     let circuit = Circuit {
         opcodes: vec![
             Opcode::BrilligCall {
-                id: BrilligFunctionId(0),
+                id: BrilligFunctionId::new(0),
                 inputs: vec![BrilligInputs::Single(hint_input)],
                 outputs: vec![BrilligOutputs::Simple(target)],
                 predicate: Expression::default(),
@@ -447,7 +483,13 @@ fn unsupported_opcode_feeding_only_brillig_hint_does_not_block_target() {
         ],
         ..Circuit::<FieldElement>::default()
     };
-    let model = build_model(&circuit, FixedMode::AllParams);
+    let model = build_model(
+        &circuit,
+        ModelOptions {
+            fixed_mode: FixedMode::AllParams,
+            ..ModelOptions::default()
+        },
+    );
 
     assert_eq!(model.unsupported_reasons.len(), 1);
     assert!(
@@ -474,7 +516,13 @@ fn unsupported_opcode_linked_through_assert_zero_blocks_target() {
         ],
         ..Circuit::<FieldElement>::default()
     };
-    let model = build_model(&circuit, FixedMode::AllParams);
+    let model = build_model(
+        &circuit,
+        ModelOptions {
+            fixed_mode: FixedMode::AllParams,
+            ..ModelOptions::default()
+        },
+    );
 
     assert_eq!(
         model.unsupported_reasons_for_target(target).len(),
@@ -493,7 +541,13 @@ fn deterministic_blackbox_with_fixed_inputs_marks_outputs_known() {
         opcodes: vec![blake2s_opcode(Witness(0), 100)],
         ..Circuit::<FieldElement>::default()
     };
-    let model = build_model(&circuit, FixedMode::Public);
+    let model = build_model(
+        &circuit,
+        ModelOptions {
+            fixed_mode: FixedMode::Public,
+            ..ModelOptions::default()
+        },
+    );
 
     assert!(model.is_fixed_known_signal(picus_wire(Witness(100))));
     assert!(model.is_fixed_known_signal(picus_wire(Witness(131))));
@@ -509,7 +563,13 @@ fn deterministic_blackbox_with_free_input_does_not_mark_outputs_known() {
         opcodes: vec![blake2s_opcode(Witness(0), 100)],
         ..Circuit::<FieldElement>::default()
     };
-    let model = build_model(&circuit, FixedMode::Public);
+    let model = build_model(
+        &circuit,
+        ModelOptions {
+            fixed_mode: FixedMode::Public,
+            ..ModelOptions::default()
+        },
+    );
 
     assert!(!model.is_fixed_known_signal(picus_wire(Witness(100))));
 }
@@ -524,7 +584,13 @@ fn determinism_constraint_solution_set_matches_determinism() {
         opcodes: vec![blake2s_opcode(Witness(0), 100)],
         ..Circuit::<FieldElement>::default()
     };
-    let model = build_model(&circuit, FixedMode::Public);
+    let model = build_model(
+        &circuit,
+        ModelOptions {
+            fixed_mode: FixedMode::Public,
+            ..ModelOptions::default()
+        },
+    );
     let modulus = modulus();
     let determinism = &model.orig_constraints[0];
 
@@ -563,7 +629,13 @@ fn deterministic_blackbox_annotates_but_does_not_block_target() {
         opcodes: vec![blake2s_opcode(Witness(0), 100), Opcode::AssertZero(link)],
         ..Circuit::<FieldElement>::default()
     };
-    let model = build_model(&circuit, FixedMode::Public);
+    let model = build_model(
+        &circuit,
+        ModelOptions {
+            fixed_mode: FixedMode::Public,
+            ..ModelOptions::default()
+        },
+    );
 
     assert!(model.unsupported_reasons_for_target(Witness(1)).is_empty());
     assert_eq!(model.abstraction_reasons_for_target(Witness(1)).len(), 1);
@@ -577,7 +649,13 @@ fn unrelated_deterministic_blackbox_does_not_annotate_target() {
         opcodes: vec![blake2s_opcode(Witness(9), 100)],
         ..Circuit::<FieldElement>::default()
     };
-    let model = build_model(&circuit, FixedMode::Public);
+    let model = build_model(
+        &circuit,
+        ModelOptions {
+            fixed_mode: FixedMode::Public,
+            ..ModelOptions::default()
+        },
+    );
 
     assert!(model.abstraction_reasons_for_target(Witness(1)).is_empty());
 }

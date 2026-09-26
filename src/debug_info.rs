@@ -202,7 +202,7 @@ pub(crate) struct RawDebugFile {
 }
 
 /// A resolved source position, ready for reporting.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct SourceLocation {
     pub(crate) file: String,
     /// 1-based.

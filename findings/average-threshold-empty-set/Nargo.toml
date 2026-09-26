@@ -1,0 +1,4 @@
+[package]
+name = "avg"
+type = "bin"
+authors = [""]

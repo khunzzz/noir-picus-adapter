@@ -13,14 +13,14 @@ use acir::{
 use num_bigint::BigUint;
 use picus_smt::query::IRConstraint;
 
-use super::{FixedMode, build_model, expr::expression_to_ir, picus_wire};
+use super::{FixedMode, ModelOptions, build_model, expr::expression_to_ir, picus_wire};
 
 // A genuinely unsupported opcode (a call to a separate ACIR circuit), used
 // to exercise the unsupported-blocking path now that deterministic black
 // boxes are abstracted rather than blocked.
 fn unsupported_call_opcode(input: Witness) -> Opcode<FieldElement> {
     Opcode::Call {
-        id: AcirFunctionId(0),
+        id: AcirFunctionId::new(0),
         inputs: vec![input],
         outputs: vec![Witness(50)],
         predicate: Expression::default(),
@@ -83,7 +83,13 @@ fn model_includes_synthetic_wire_and_shifted_input() {
         ..Circuit::<FieldElement>::default()
     };
 
-    let model = build_model(&circuit, FixedMode::AllParams);
+    let model = build_model(
+        &circuit,
+        ModelOptions {
+            fixed_mode: FixedMode::AllParams,
+            ..ModelOptions::default()
+        },
+    );
 
     assert_eq!(model.n_wires, 2);
     assert!(model.input_indices.contains(&0));
@@ -97,7 +103,13 @@ fn public_fixed_mode_does_not_fix_private_parameters() {
         ..Circuit::<FieldElement>::default()
     };
 
-    let model = build_model(&circuit, FixedMode::Public);
+    let model = build_model(
+        &circuit,
+        ModelOptions {
+            fixed_mode: FixedMode::Public,
+            ..ModelOptions::default()
+        },
+    );
 
     assert!(model.input_indices.contains(&0));
     assert!(!model.input_indices.contains(&1));
@@ -115,7 +127,13 @@ fn linear_assertion_marks_target_known_from_public_input() {
         ..Circuit::<FieldElement>::default()
     };
 
-    let model = build_model(&circuit, FixedMode::Public);
+    let model = build_model(
+        &circuit,
+        ModelOptions {
+            fixed_mode: FixedMode::Public,
+            ..ModelOptions::default()
+        },
+    );
 
     assert!(!model.input_indices.contains(&picus_wire(Witness(1))));
     assert!(model.is_fixed_known_signal(picus_wire(Witness(1))));
@@ -138,7 +156,13 @@ fn linear_knownness_propagates_through_supported_chain() {
         ..Circuit::<FieldElement>::default()
     };
 
-    let model = build_model(&circuit, FixedMode::Public);
+    let model = build_model(
+        &circuit,
+        ModelOptions {
+            fixed_mode: FixedMode::Public,
+            ..ModelOptions::default()
+        },
+    );
 
     assert!(model.is_fixed_known_signal(picus_wire(Witness(1))));
     assert!(model.is_fixed_known_signal(picus_wire(Witness(2))));
@@ -156,13 +180,19 @@ fn nonlinear_assertion_does_not_mark_target_known() {
         ..Circuit::<FieldElement>::default()
     };
 
-    let model = build_model(&circuit, FixedMode::Public);
+    let model = build_model(
+        &circuit,
+        ModelOptions {
+            fixed_mode: FixedMode::Public,
+            ..ModelOptions::default()
+        },
+    );
 
     assert!(!model.is_fixed_known_signal(picus_wire(Witness(1))));
 }
 
 #[test]
-fn target_constraints_slice_at_fixed_known_boundary() {
+fn target_constraints_keep_the_chain_that_feeds_the_target() {
     let mut first = Expression::default();
     first.push_addition_term(FieldElement::one(), Witness(1));
     first.push_addition_term(-FieldElement::one(), Witness(0));
@@ -185,12 +215,69 @@ fn target_constraints_slice_at_fixed_known_boundary() {
         ..Circuit::<FieldElement>::default()
     };
 
-    let model = build_model(&circuit, FixedMode::Public);
+    let model = build_model(
+        &circuit,
+        ModelOptions {
+            fixed_mode: FixedMode::Public,
+            ..ModelOptions::default()
+        },
+    );
     let (orig, alt) = model.target_constraints(Witness(3));
 
+    // The chain `w1 = w0`, `w2 = w1` reaches the target through `w4*(w3 - w2)`,
+    // so all three constraints stay. Cutting the chain at the fixed-known `w2`
+    // would leave `w2` free and make the target look under-constrained.
     assert_eq!(model.orig_constraints.len(), 3);
-    assert_eq!(orig.len(), 1);
-    assert_eq!(alt.len(), 1);
+    assert_eq!(orig.len(), 3);
+    assert_eq!(alt.len(), 3);
+}
+
+// Regression for the `verified_division_hint` shape, which every Field division
+// compiles to: an inverse hint proves the denominator non-zero in a constraint
+// that does not otherwise touch the target. Slicing that constraint away lets
+// the solver pick `denominator = 0`, making the quotient look free.
+#[test]
+fn target_constraints_keep_the_non_zero_proof_of_a_divisor() {
+    // w1 * w4 = 1  (denominator w1 times its inverse hint w4)
+    let mut inverse = Expression::default();
+    inverse.push_multiplication_term(FieldElement::one(), Witness(1), Witness(4));
+    inverse.q_c = -FieldElement::one();
+
+    // w0 = w1 * w3  (numerator == denominator * quotient hint)
+    let mut division = Expression::default();
+    division.push_multiplication_term(FieldElement::one(), Witness(1), Witness(3));
+    division.push_addition_term(-FieldElement::one(), Witness(0));
+
+    // w3 = w2  (the quotient is returned)
+    let mut returned = Expression::default();
+    returned.push_addition_term(FieldElement::one(), Witness(3));
+    returned.push_addition_term(-FieldElement::one(), Witness(2));
+
+    let circuit = Circuit {
+        private_parameters: [Witness(0), Witness(1)].into_iter().collect(),
+        return_values: PublicInputs([Witness(2)].into_iter().collect()),
+        opcodes: vec![
+            Opcode::AssertZero(inverse),
+            Opcode::AssertZero(division),
+            Opcode::AssertZero(returned),
+        ],
+        ..Circuit::<FieldElement>::default()
+    };
+
+    let model = build_model(
+        &circuit,
+        ModelOptions {
+            fixed_mode: FixedMode::AllParams,
+            ..ModelOptions::default()
+        },
+    );
+    let (orig, _alt) = model.target_constraints(Witness(2));
+
+    assert_eq!(
+        orig.len(),
+        3,
+        "the non-zero proof of the divisor was sliced away"
+    );
 }
 
 #[test]
@@ -203,7 +290,13 @@ fn target_constraints_keep_range_auxiliary_group() {
         ..Circuit::<FieldElement>::default()
     };
 
-    let model = build_model(&circuit, FixedMode::Public);
+    let model = build_model(
+        &circuit,
+        ModelOptions {
+            fixed_mode: FixedMode::Public,
+            ..ModelOptions::default()
+        },
+    );
     let (orig, alt) = model.target_constraints(Witness(1));
 
     assert_eq!(orig.len(), 4);
@@ -220,7 +313,13 @@ fn range_allocates_bit_decomposition_constraints() {
         ..Circuit::<FieldElement>::default()
     };
 
-    let model = build_model(&circuit, FixedMode::Public);
+    let model = build_model(
+        &circuit,
+        ModelOptions {
+            fixed_mode: FixedMode::Public,
+            ..ModelOptions::default()
+        },
+    );
 
     assert_eq!(model.n_wires, 5);
     assert!(model.unsupported_reasons.is_empty());
@@ -244,7 +343,7 @@ fn range_allocates_bit_decomposition_constraints() {
     let IRConstraint::Linear(terms) = &model.orig_constraints[3] else {
         panic!("expected range sum constraint");
     };
-    let modulus = FieldElement::modulus();
+    let modulus = super::field_modulus();
     assert_eq!(terms.len(), 4);
     assert_eq!(terms[0].coeff, BigUint::from(1u32));
     assert_eq!(terms[0].var, "x1");
@@ -266,7 +365,13 @@ fn range_zero_constrains_witness_to_zero() {
         ..Circuit::<FieldElement>::default()
     };
 
-    let model = build_model(&circuit, FixedMode::Public);
+    let model = build_model(
+        &circuit,
+        ModelOptions {
+            fixed_mode: FixedMode::Public,
+            ..ModelOptions::default()
+        },
+    );
 
     assert_eq!(model.n_wires, 2);
     assert!(model.unsupported_reasons.is_empty());
@@ -282,7 +387,7 @@ fn range_zero_constrains_witness_to_zero() {
 
 #[test]
 fn memory_read_with_dynamic_index_is_supported() {
-    let block_id = BlockId(0);
+    let block_id = BlockId::new(0);
     let mut read_matches_public = Expression::default();
     read_matches_public.push_addition_term(FieldElement::one(), Witness(4));
     read_matches_public.push_addition_term(-FieldElement::one(), Witness(0));
@@ -310,19 +415,25 @@ fn memory_read_with_dynamic_index_is_supported() {
         ..Circuit::<FieldElement>::default()
     };
 
-    let model = build_model(&circuit, FixedMode::Public);
+    let model = build_model(
+        &circuit,
+        ModelOptions {
+            fixed_mode: FixedMode::Public,
+            ..ModelOptions::default()
+        },
+    );
     let (orig, alt) = model.target_constraints(Witness(2));
 
     assert!(model.unsupported_reasons.is_empty());
     assert_eq!(model.n_wires, 10);
     assert_eq!(model.orig_constraints.len(), 9);
-    assert_eq!(orig.len(), 8);
-    assert_eq!(alt.len(), 8);
+    assert_eq!(orig.len(), 9);
+    assert_eq!(alt.len(), 9);
 }
 
 #[test]
 fn memory_write_updates_state_for_later_reads() {
-    let block_id = BlockId(0);
+    let block_id = BlockId::new(0);
     let circuit = Circuit {
         opcodes: vec![
             Opcode::MemoryInit {
@@ -342,7 +453,13 @@ fn memory_write_updates_state_for_later_reads() {
         ..Circuit::<FieldElement>::default()
     };
 
-    let model = build_model(&circuit, FixedMode::Public);
+    let model = build_model(
+        &circuit,
+        ModelOptions {
+            fixed_mode: FixedMode::Public,
+            ..ModelOptions::default()
+        },
+    );
 
     assert!(model.unsupported_reasons.is_empty());
     assert_eq!(model.n_wires, 12);
@@ -360,7 +477,13 @@ fn range_at_field_width_is_noop() {
         ..Circuit::<FieldElement>::default()
     };
 
-    let model = build_model(&circuit, FixedMode::Public);
+    let model = build_model(
+        &circuit,
+        ModelOptions {
+            fixed_mode: FixedMode::Public,
+            ..ModelOptions::default()
+        },
+    );
 
     assert_eq!(model.n_wires, 2);
     assert!(model.unsupported_reasons.is_empty());
@@ -378,7 +501,13 @@ fn out_of_range_constant_is_unsupported() {
         ..Circuit::<FieldElement>::default()
     };
 
-    let model = build_model(&circuit, FixedMode::Public);
+    let model = build_model(
+        &circuit,
+        ModelOptions {
+            fixed_mode: FixedMode::Public,
+            ..ModelOptions::default()
+        },
+    );
 
     assert_eq!(model.unsupported_reasons.len(), 1);
     assert!(model.unsupported_reasons[0].contains("RANGE(2) constant input does not fit"));
@@ -396,7 +525,13 @@ fn bitwise_and_allocates_bit_decomposition_constraints() {
         ..Circuit::<FieldElement>::default()
     };
 
-    let model = build_model(&circuit, FixedMode::Public);
+    let model = build_model(
+        &circuit,
+        ModelOptions {
+            fixed_mode: FixedMode::Public,
+            ..ModelOptions::default()
+        },
+    );
 
     assert_eq!(model.n_wires, 10);
     assert!(model.unsupported_reasons.is_empty());
@@ -440,14 +575,20 @@ fn bitwise_xor_with_constant_uses_linear_bit_relations() {
         ..Circuit::<FieldElement>::default()
     };
 
-    let model = build_model(&circuit, FixedMode::Public);
+    let model = build_model(
+        &circuit,
+        ModelOptions {
+            fixed_mode: FixedMode::Public,
+            ..ModelOptions::default()
+        },
+    );
 
     assert_eq!(model.n_wires, 7);
     assert!(model.unsupported_reasons.is_empty());
     assert_eq!(model.orig_constraints.len(), 8);
     assert_eq!(model.alt_constraints.len(), 8);
 
-    let modulus = FieldElement::modulus();
+    let modulus = super::field_modulus();
     let IRConstraint::Linear(terms) = &model.orig_constraints[6] else {
         panic!("expected first XOR bit relation");
     };
@@ -481,7 +622,13 @@ fn bitwise_width_at_field_width_is_unsupported() {
         ..Circuit::<FieldElement>::default()
     };
 
-    let model = build_model(&circuit, FixedMode::Public);
+    let model = build_model(
+        &circuit,
+        ModelOptions {
+            fixed_mode: FixedMode::Public,
+            ..ModelOptions::default()
+        },
+    );
 
     assert_eq!(model.unsupported_reasons.len(), 1);
     assert!(model.unsupported_reasons[0].contains("unsupported AND width"));
@@ -499,7 +646,13 @@ fn bitwise_out_of_range_constant_is_unsupported() {
         ..Circuit::<FieldElement>::default()
     };
 
-    let model = build_model(&circuit, FixedMode::Public);
+    let model = build_model(
+        &circuit,
+        ModelOptions {
+            fixed_mode: FixedMode::Public,
+            ..ModelOptions::default()
+        },
+    );
 
     assert_eq!(model.unsupported_reasons.len(), 1);
     assert!(model.unsupported_reasons[0].contains("RANGE(2) constant input does not fit"));
@@ -512,7 +665,13 @@ fn unrelated_unsupported_opcode_does_not_block_target() {
         ..Circuit::<FieldElement>::default()
     };
 
-    let model = build_model(&circuit, FixedMode::AllParams);
+    let model = build_model(
+        &circuit,
+        ModelOptions {
+            fixed_mode: FixedMode::AllParams,
+            ..ModelOptions::default()
+        },
+    );
 
     assert_eq!(model.unsupported_reasons.len(), 1);
     assert!(model.unsupported_reasons_for_target(Witness(1)).is_empty());
@@ -532,7 +691,13 @@ fn related_unsupported_opcode_blocks_target() {
         ..Circuit::<FieldElement>::default()
     };
 
-    let model = build_model(&circuit, FixedMode::AllParams);
+    let model = build_model(
+        &circuit,
+        ModelOptions {
+            fixed_mode: FixedMode::AllParams,
+            ..ModelOptions::default()
+        },
+    );
 
     assert_eq!(model.unsupported_reasons_for_target(Witness(1)).len(), 1);
 }
@@ -552,7 +717,13 @@ fn unsupported_opcode_sharing_only_fixed_input_does_not_block_target() {
         ..Circuit::<FieldElement>::default()
     };
 
-    let model = build_model(&circuit, FixedMode::AllParams);
+    let model = build_model(
+        &circuit,
+        ModelOptions {
+            fixed_mode: FixedMode::AllParams,
+            ..ModelOptions::default()
+        },
+    );
 
     assert!(model.unsupported_reasons_for_target(Witness(1)).is_empty());
 }

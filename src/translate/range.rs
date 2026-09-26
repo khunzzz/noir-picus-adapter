@@ -2,7 +2,7 @@
 //! bit decomposition `x = sum(2^i * b_i)` for widths below the field width,
 //! no-op at or above it.
 
-use std::collections::HashSet;
+use std::collections::BTreeSet;
 
 use acir::{AcirField, FieldElement, circuit::opcodes::FunctionInput};
 use num_bigint::BigUint;
@@ -46,7 +46,7 @@ pub(super) fn range_constraints(
     num_bits: u32,
     aux_wires: &[usize],
     is_alt: bool,
-    input_indices: &HashSet<usize>,
+    input_indices: &BTreeSet<usize>,
 ) -> Result<Vec<IRConstraint>, String> {
     match input {
         FunctionInput::Constant(value) => {

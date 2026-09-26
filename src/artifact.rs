@@ -7,6 +7,12 @@ use serde::Deserialize;
 
 use crate::debug_info::{Abi, ProgramDebugData, RawDebugFile};
 
+/// Everything a scan needs from one artifact file.
+pub(crate) struct LoadedArtifact {
+    pub(crate) noir_version: Option<String>,
+    pub(crate) programs: Vec<LoadedProgram>,
+}
+
 pub(crate) struct LoadedProgram {
     pub(crate) name: String,
     pub(crate) program: Program<FieldElement>,
@@ -20,8 +26,11 @@ pub(crate) struct LoadedProgram {
 struct ProgramArtifact {
     #[serde(deserialize_with = "Program::deserialize_program_base64")]
     bytecode: Program<FieldElement>,
+    /// Kept untyped and parsed lazily, like `debug_symbols`: the ABI is display
+    /// sugar, and an unknown `kind` in a newer Noir must not make an otherwise
+    /// loadable artifact fail with a misleading "version mismatch" error.
     #[serde(default)]
-    abi: Option<Abi>,
+    abi: Option<serde_json::Value>,
     /// Kept as the raw base64 payload; decoded lazily so a malformed or
     /// version-skewed debug blob can never fail the scan.
     #[serde(default)]
@@ -49,7 +58,7 @@ struct ContractFunctionArtifact {
     #[serde(deserialize_with = "Program::deserialize_program_base64")]
     bytecode: Program<FieldElement>,
     #[serde(default)]
-    abi: Option<Abi>,
+    abi: Option<serde_json::Value>,
     #[serde(default)]
     debug_symbols: Option<String>,
 }
@@ -59,28 +68,28 @@ enum Artifact {
     Contract(ContractArtifact),
 }
 
-pub(crate) fn load_programs(path: &Path) -> Result<Vec<LoadedProgram>> {
-    let artifact = read_artifact(path)
+pub(crate) fn load_programs(path: &Path) -> Result<LoadedArtifact> {
+    let (artifact, noir_version) = read_artifact(path)
         .wrap_err_with(|| format!("failed to read Noir artifact {}", path.display()))?;
 
-    match artifact {
+    let programs = match artifact {
         Artifact::Program(program) => {
             let debug = parse_debug_data(
                 program.debug_symbols.as_deref(),
                 program.file_map,
                 "program",
             );
-            Ok(vec![LoadedProgram {
+            vec![LoadedProgram {
                 name: artifact_stem(path),
                 program: program.bytecode,
-                abi: program.abi,
+                abi: parse_abi(program.abi, "program"),
                 debug,
-            }])
+            }]
         }
         Artifact::Contract(contract) => {
             let contract_name = contract.name;
             let file_map = contract.file_map;
-            Ok(contract
+            contract
                 .functions
                 .into_iter()
                 .map(|function| {
@@ -89,14 +98,31 @@ pub(crate) fn load_programs(path: &Path) -> Result<Vec<LoadedProgram>> {
                         file_map.clone(),
                         &function.name,
                     );
+                    let abi = parse_abi(function.abi, &function.name);
                     LoadedProgram {
                         name: format!("{contract_name}::{}", function.name),
                         program: function.bytecode,
-                        abi: function.abi,
+                        abi,
                         debug,
                     }
                 })
-                .collect())
+                .collect()
+        }
+    };
+
+    Ok(LoadedArtifact {
+        noir_version,
+        programs,
+    })
+}
+
+fn parse_abi(abi: Option<serde_json::Value>, label: &str) -> Option<Abi> {
+    let abi = abi?;
+    match serde_json::from_value::<Abi>(abi) {
+        Ok(abi) => Some(abi),
+        Err(message) => {
+            eprintln!("warning: ignoring ABI of {label}: {message}");
+            None
         }
     }
 }
@@ -118,11 +144,22 @@ fn parse_debug_data(
     }
 }
 
-fn read_artifact(path: &Path) -> Result<Artifact> {
-    let file = path.with_extension("json");
+fn read_artifact(path: &Path) -> Result<(Artifact, Option<String>)> {
+    // `with_extension` would rewrite the last dot-segment, so `case_v1.2`
+    // would silently read `case_v1.json`. Only append when the file is missing.
+    let file = if path.exists() {
+        path.to_path_buf()
+    } else {
+        let mut name = path.as_os_str().to_owned();
+        name.push(".json");
+        std::path::PathBuf::from(name)
+    };
     let json = std::fs::read(&file)
         .wrap_err_with(|| format!("failed to read artifact file {}", file.display()))?;
     let metadata = serde_json::from_slice::<ArtifactMetadata>(&json).ok();
+    let noir_version = metadata
+        .as_ref()
+        .and_then(|metadata| metadata.noir_version.clone());
 
     serde_json::from_slice::<ProgramArtifact>(&json)
         .map(Artifact::Program)
@@ -130,9 +167,8 @@ fn read_artifact(path: &Path) -> Result<Artifact> {
             serde_json::from_slice::<ContractArtifact>(&json)
                 .map(Artifact::Contract)
                 .map_err(|contract_error| {
-                    let noir_version = metadata
-                        .and_then(|metadata| metadata.noir_version)
-                        .unwrap_or_else(|| "unknown".to_owned());
+                    let noir_version =
+                        noir_version.clone().unwrap_or_else(|| "unknown".to_owned());
                     eyre!(
                         "artifact is neither ProgramArtifact nor ContractArtifact; \
                          artifact noir_version: {noir_version}; \
@@ -143,6 +179,7 @@ fn read_artifact(path: &Path) -> Result<Artifact> {
                     )
                 })
         })
+        .map(|artifact| (artifact, noir_version))
 }
 
 fn artifact_stem(path: &Path) -> String {

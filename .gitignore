@@ -2,3 +2,7 @@
 **/target/
 examples/smt/
 .z3-trace
+
+# Python runtime caches
+__pycache__/
+*.py[cod]

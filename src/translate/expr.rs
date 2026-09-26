@@ -1,7 +1,7 @@
 //! Translation of `AssertZero` expressions (linear and nonlinear) into Picus
 //! IR constraints.
 
-use std::collections::HashSet;
+use std::collections::BTreeSet;
 
 use acir::{FieldElement, native_types::Expression};
 use num_traits::Zero;
@@ -12,7 +12,7 @@ use super::ir::{field_to_biguint, picus_wire, var_name};
 pub(super) fn expression_to_ir(
     expression: &Expression<FieldElement>,
     is_alt: bool,
-    input_indices: &HashSet<usize>,
+    input_indices: &BTreeSet<usize>,
 ) -> Option<IRConstraint> {
     if expression.mul_terms.is_empty() {
         let terms = expression_linear_terms(expression, is_alt, input_indices, false);
@@ -47,7 +47,7 @@ pub(super) fn expression_to_ir(
 fn expression_linear_terms(
     expression: &Expression<FieldElement>,
     is_alt: bool,
-    input_indices: &HashSet<usize>,
+    input_indices: &BTreeSet<usize>,
     negate: bool,
 ) -> Vec<IRTerm> {
     let mut terms = Vec::new();
@@ -70,7 +70,7 @@ fn push_linear_term(
     coefficient: FieldElement,
     wire: usize,
     is_alt: bool,
-    input_indices: &HashSet<usize>,
+    input_indices: &BTreeSet<usize>,
     negate: bool,
 ) {
     let coefficient = if negate { -coefficient } else { coefficient };

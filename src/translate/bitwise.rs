@@ -1,7 +1,7 @@
 //! Translation of the `AND`/`XOR` black boxes via bit decomposition of both
 //! inputs and the output, with one IR constraint per bit position.
 
-use std::collections::HashSet;
+use std::collections::BTreeSet;
 
 use acir::{AcirField, FieldElement, circuit::opcodes::FunctionInput, native_types::Witness};
 use num_bigint::BigUint;
@@ -45,7 +45,7 @@ enum BitRef {
 pub(super) fn bitwise_constraint_group(
     call: &BitwiseCall,
     next_aux_wire: &mut usize,
-    input_indices: &HashSet<usize>,
+    input_indices: &BTreeSet<usize>,
 ) -> TranslatedGroup {
     let aux_wires = allocate_bitwise_aux_wires(call, next_aux_wire)?;
     let orig = bitwise_constraints(call, &aux_wires, false, input_indices)?;
@@ -90,7 +90,7 @@ fn bitwise_constraints(
     call: &BitwiseCall,
     aux_wires: &BitwiseAuxWires,
     is_alt: bool,
-    input_indices: &HashSet<usize>,
+    input_indices: &BTreeSet<usize>,
 ) -> Result<Vec<IRConstraint>, String> {
     let num_bits = call.num_bits;
     let mut constraints = Vec::new();
@@ -184,7 +184,7 @@ fn bitwise_bit_constraint(
     rhs: BitRef,
     output: BitRef,
     is_alt: bool,
-    input_indices: &HashSet<usize>,
+    input_indices: &BTreeSet<usize>,
 ) -> IRConstraint {
     match op {
         BitwiseOp::And => and_bit_constraint(lhs, rhs, output, is_alt, input_indices),
@@ -197,7 +197,7 @@ fn and_bit_constraint(
     rhs: BitRef,
     output: BitRef,
     is_alt: bool,
-    input_indices: &HashSet<usize>,
+    input_indices: &BTreeSet<usize>,
 ) -> IRConstraint {
     match (lhs, rhs) {
         (BitRef::Constant(false), _) | (_, BitRef::Constant(false)) => {
@@ -227,7 +227,7 @@ fn xor_bit_constraint(
     rhs: BitRef,
     output: BitRef,
     is_alt: bool,
-    input_indices: &HashSet<usize>,
+    input_indices: &BTreeSet<usize>,
 ) -> IRConstraint {
     match (lhs, rhs) {
         (BitRef::Constant(false), bit) | (bit, BitRef::Constant(false)) => bit_linear_constraint(
@@ -269,7 +269,7 @@ fn xor_bit_constraint(
 fn bit_linear_constraint(
     terms: Vec<(BigUint, BitRef)>,
     is_alt: bool,
-    input_indices: &HashSet<usize>,
+    input_indices: &BTreeSet<usize>,
 ) -> IRConstraint {
     IRConstraint::Linear(bit_linear_terms(terms, is_alt, input_indices))
 }
@@ -277,7 +277,7 @@ fn bit_linear_constraint(
 fn bit_linear_terms(
     terms: Vec<(BigUint, BitRef)>,
     is_alt: bool,
-    input_indices: &HashSet<usize>,
+    input_indices: &BTreeSet<usize>,
 ) -> Vec<IRTerm> {
     let mut ir_terms = Vec::new();
     for (coeff, bit) in terms {

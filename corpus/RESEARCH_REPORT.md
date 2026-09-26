@@ -152,19 +152,34 @@ average scan time 183.6 ms, max scan time 746 ms.
 
 ### Query Slicing Effect
 
-For the current realistic vulnerable rows, each target query uses 2 original
-constraints and 2 alternative constraints after slicing, even when the full
-circuit has 2051 constraints. Fixed variants mostly exit through the
-fixed-known fast path.
+> **Superseded.** The numbers previously reported here (2 original and 2
+> alternative constraints per target query, and the timings in the tables above)
+> were produced by a slicing rule that cut the cone of influence at every
+> *determined* wire. That rule is unsound in the false-positive direction: it
+> drops feasibility constraints such as `inverse * d = 1`, the proof that a
+> divisor is non-zero, and every Field division compiles to that shape. It
+> reported the repository's own `examples/verified_division_hint` as `unsafe`.
+> See SOUNDNESS.md, "Срез конуса влияния".
+>
+> Slicing now cuts only at provably-constant wires, and the aggressive cut
+> survives as the *first* level of an abstraction-refinement loop, where it is
+> sound because an over-approximation that comes back `UNSAT` already proves
+> uniqueness. Any measurement of query size or scan time predating that change
+> should be re-taken; it was measuring a query that omitted constraints the
+> verdict depended on.
 
-This supports the engineering hypothesis that production-like circuits should
-be handled in two stages:
+The two-stage architecture the old numbers were used to argue for is unchanged
+and, if anything, better supported:
 
-1. Adapter-side cone-of-influence slicing and fixed-known propagation.
-2. Picus/QED solving on the reduced target cone.
+1. propagation and slicing on the adapter side,
+2. Picus/SMT on what is left.
 
-Without stage 1, the solver receives the whole circuit and spends time on
-irrelevant deterministic chains.
+What changed is where the first stage gets its leverage. It is no longer the
+cone cut — that has to stay exact — but the uniqueness-propagation lemmas in
+`src/translate/uniqueness.rs`, which settle a witness without any solver call.
+On the realistic corpus under `--fixed all-params` propagation alone determines
+every witness; on randomly generated programs it determines a median of about
+60% of them. Targets it settles never reach the solver at all.
 
 ## Failure-Driven Tool Improvements
 

@@ -1,10 +1,9 @@
 //! Translation of `MemoryOp` reads/writes over an initialized block, using a
 //! boolean one-hot selector vector tied to the dynamic index.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap};
 
 use acir::{
-    FieldElement,
     circuit::opcodes::{BlockId, MemOp, MemOpKind},
     native_types::Witness,
 };
@@ -17,10 +16,10 @@ use super::ir::{boolean_wire_constraint, neg_mod_coeff, picus_wire, var_name};
 
 pub(super) fn memory_constraint_group(
     block_id: BlockId,
-    op: &MemOp<FieldElement>,
+    op: &MemOp,
     memory_blocks: &mut HashMap<BlockId, Vec<usize>>,
     next_aux_wire: &mut usize,
-    input_indices: &HashSet<usize>,
+    input_indices: &BTreeSet<usize>,
 ) -> TranslatedGroup {
     let cells = memory_blocks
         .get(&block_id)
@@ -59,12 +58,12 @@ fn allocate_memory_aux_wires(len: usize, next_aux_wire: &mut usize) -> Vec<usize
 }
 
 fn memory_op_constraints(
-    op: &MemOp<FieldElement>,
+    op: &MemOp,
     cells: &[usize],
     selectors: &[usize],
     new_cells: &[usize],
     is_alt: bool,
-    input_indices: &HashSet<usize>,
+    input_indices: &BTreeSet<usize>,
 ) -> Vec<IRConstraint> {
     let mut constraints = memory_selector_constraints(op.index, selectors, is_alt, input_indices);
     match op.operation {
@@ -97,7 +96,7 @@ fn memory_selector_constraints(
     index: Witness,
     selectors: &[usize],
     is_alt: bool,
-    input_indices: &HashSet<usize>,
+    input_indices: &BTreeSet<usize>,
 ) -> Vec<IRConstraint> {
     let mut constraints = Vec::with_capacity(selectors.len() + 2);
     for &selector in selectors {
@@ -141,7 +140,7 @@ fn memory_read_constraint(
     cells: &[usize],
     selectors: &[usize],
     is_alt: bool,
-    input_indices: &HashSet<usize>,
+    input_indices: &BTreeSet<usize>,
 ) -> IRConstraint {
     IRConstraint::NonLinear {
         lhs_terms: cells
@@ -166,7 +165,7 @@ fn memory_write_constraint(
     value: usize,
     selector: usize,
     is_alt: bool,
-    input_indices: &HashSet<usize>,
+    input_indices: &BTreeSet<usize>,
 ) -> IRConstraint {
     IRConstraint::NonLinear {
         lhs_terms: vec![

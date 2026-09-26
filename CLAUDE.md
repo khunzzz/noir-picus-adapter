@@ -37,7 +37,8 @@ Result interpretation:
 ## Build, test, run
 
 ```bash
-cargo build                 # first build is SLOW: picus-smt builds cvc5 if needed
+cargo build                 # first build is SLOW unless CVC5_LIB_DIR points at a
+                            # prebuilt cvc5 release (see README)
 cargo test                  # unit tests live in src/translate/{tests,soundness_tests}.rs
 cargo fmt                    # no custom rustfmt.toml; use defaults
 cargo clippy
@@ -71,7 +72,10 @@ One subcommand: `scan` (defined in `src/lib.rs`).
 | `--theory` | `ff`, `nia` | `ff` | SMT theory (finite-field / nonlinear int arith) |
 | `--format` | `human`, `json` | `human` | output format |
 | `--timeout` | ms | `5000` | per-target solver timeout |
-| `--dump-smt <dir>` | path | — | write per-target `.smt2` files |
+| `--dump-smt <dir>` | path | — | write per-target `.smt2` files, one per abstraction level |
+| `--no-solve` | flag | — | propagate only; unresolved targets become `unknown` |
+| `--max-range-bits` | u32 | `64` | widest `RANGE` still expanded into bits |
+| `--exit-code-on-finding` | flag | — | exit 1 on `unsafe`, 2 on `error` |
 | `--verbose` / `-v` | flag | — | witness selection, IR sizes, self-composition mapping |
 
 ## Source layout (`src/`)
@@ -82,7 +86,7 @@ One subcommand: `scan` (defined in `src/lib.rs`).
 | `lib.rs` | CLI parsing (clap), `scan` driver, CLI-enum ↔ internal-enum conversions, report assembly. |
 | `artifact.rs` | Load/deserialize Noir artifact JSON. Handles both `ProgramArtifact` (single program) and `ContractArtifact` (multiple functions → one `LoadedProgram` each). |
 | `targets.rs` | Discover target witnesses: return values and `BrilligCall` outputs (`Simple`/`Array`), tagged with `TargetOrigin`. |
-| `translate.rs` + `translate/` | **Core.** ACIR→Picus IR translation. The root module owns `AcirPicusModel`, the `build_model` per-opcode driver, cone-of-influence slicing and unsupported-opcode tracking. Per-opcode emission lives in submodules: `expr` (AssertZero), `range`, `bitwise` (AND/XOR), `memory`, `determinism` (Tier-2 abstraction), `known` (fixed-known propagation, Tier 1), `ir` (wire mapping / `var_name` / coefficient helpers), `wires` (wire enumeration). Tests: `translate/tests.rs` (IR shape) and `translate/soundness_tests.rs` (differential, solution sets). |
+| `translate.rs` + `translate/` | **Core.** ACIR→Picus IR translation. The root module owns `AcirPicusModel`, the `build_model` per-opcode driver, layered cone slicing (`target_constraints_at`) and unsupported-opcode tracking. Per-opcode emission lives in submodules: `expr` (AssertZero), `range`, `bitwise` (AND/XOR), `memory`, `determinism` (Tier-2 abstraction + the functional-blackbox allow-list), `uniqueness` (uniqueness-propagation lemmas), `known` (constant propagation), `ir` (wire mapping / `var_name` / coefficient helpers), `wires` (wire enumeration). Tests: `translate/tests.rs` (IR shape), `translate/uniqueness.rs` (lemma tests) and `translate/soundness_tests.rs` (differential, solution sets). |
 | `solver.rs` | Build the `UniquenessQuery`, short-circuit trivially-verified targets, run the Picus backend, optional SMT dump, map `SolverResult`→`TargetReport`. |
 | `report.rs` | Serializable report types (`ScanReport` → `ProgramReport` → `CircuitReport` → `TargetReport`), `TargetStatus` enum, human + JSON printers. |
 

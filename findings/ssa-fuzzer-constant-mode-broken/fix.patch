@@ -1,0 +1,28 @@
+--- /home/said/.claude/jobs/94c17569/tmp/fuzzer.rs.bak	2026-08-21 12:42:51.891676749 +0000
++++ /tmp/claude-1000/-home-said/2a6a48a6-cee3-4623-bac6-765c0631d66f/scratchpad/noirsrc/tooling/ssa_fuzzer/fuzzer/src/fuzz_lib/fuzzer.rs	2026-08-21 12:42:51.920677665 +0000
+@@ -214,10 +214,21 @@
+         let mut execution_results: HashMap<FuzzerMode, FuzzerOutput> = HashMap::new();
+         for mut context in self.contexts {
+             context.finalize_program();
+-            execution_results.insert(
+-                context.get_mode(),
+-                Self::execute_and_compare(context, initial_witness.clone()),
+-            );
++            // A constant-mode program has had its arguments substituted, so it
++            // declares no parameters and its witness numbering starts at the
++            // return value. Handing it the initial witness puts an *input* at
++            // the index the return occupies, the solver is never run, and the
++            // comparison reads that leftover input back as if it were a result.
++            //
++            // Concretely: the program compiles to `ASSERT w0 = 0` with
++            // `return_values = {w0}`, and the comparison reported `166` — the
++            // first argument the fuzzer had placed at index 0.
++            let witness = if context.get_mode() == FuzzerMode::Constant {
++                WitnessMap::new()
++            } else {
++                initial_witness.clone()
++            };
++            execution_results.insert(context.get_mode(), Self::execute_and_compare(context, witness));
+         }
+         let results_set = execution_results
+             .values()

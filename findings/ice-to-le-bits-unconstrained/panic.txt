@@ -1,0 +1,6 @@
+[31mThe application panicked (crashed).[0m
+Message:  [36mToRadix num_limbs (255) exceeds the maximum useful number of limbs (254) for this field[0m
+Location: [35mcompiler/noirc_evaluator/src/brillig/brillig_ir/codegen_intrinsic.rs[0m:[35m78[0m
+
+This is a bug. We may have already fixed this in newer versions of Nargo so try searching for similar issues at https://github.com/noir-lang/noir/issues/.
+If there isn't an open issue for this bug, consider opening one at https://github.com/noir-lang/noir/issues/new?labels=bug&template=bug_report.yml

@@ -8,7 +8,7 @@ use acir::{
     },
     native_types::Witness,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug)]
 pub(crate) struct Target {
@@ -23,7 +23,7 @@ pub(crate) enum TargetMode {
     All,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub(crate) enum TargetOrigin {
     BrilligSimpleOutput {
@@ -90,7 +90,7 @@ fn collect_brillig_outputs(
                 *witness,
                 TargetOrigin::BrilligSimpleOutput {
                     opcode_index,
-                    function_id: function_id.0,
+                    function_id: function_id.as_u32(),
                     function_name: function_name.clone(),
                 },
             ),
@@ -101,7 +101,7 @@ fn collect_brillig_outputs(
                         witness,
                         TargetOrigin::BrilligArrayOutput {
                             opcode_index,
-                            function_id: function_id.0,
+                            function_id: function_id.as_u32(),
                             function_name: function_name.clone(),
                             array_index,
                         },
