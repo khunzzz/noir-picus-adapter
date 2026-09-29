@@ -6,6 +6,8 @@
 - [ОТЧЁТ.md](../ОТЧЁТ.md) — метод, найденные дефекты, измерения, отрицательные результаты и ограничения.
 - [findings/](../findings/) — отдельные находки и контрольные примеры, исходники, артефакты и свидетели.
 - [corpus/RESEARCH_REPORT.md](../corpus/RESEARCH_REPORT.md) — исследовательский отчёт по корпусу.
+- [EXTERNAL_STATUS_2026-09-29.md](EXTERNAL_STATUS_2026-09-29.md) — сверка наших находок с трекером Noir, чужие параллельные работы (witness_mutator, SMT-проверки гаджетов, PR #12966) и чек-лист перепроверок.
+- [reports/Направления поиска багов Noir.md](../reports/Направления%20поиска%20багов%20Noir.md) — ресерч направлений (29.09.2026), заметки в `research_notes/`.
 - [SOUNDNESS.md](../SOUNDNESS.md) — обоснование корректности и ограничения анализа.
 - [hermes-skills/noir-picus-adapter/](hermes-skills/noir-picus-adapter/) — сохранённый скилл работы с адаптером.
 - [hermes-skills/noir-compiler-testing/](hermes-skills/noir-compiler-testing/) — методика исследования компилятора и справочные заметки, включая состояние находок от 22 августа.
