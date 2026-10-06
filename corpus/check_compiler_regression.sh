@@ -9,6 +9,8 @@ SOURCE_DIR="$CORPUS_DIR/compiler_regression"
 ARTIFACTS_DIR="$CORPUS_DIR/compiler_regression_artifacts"
 
 NARGO="${NARGO:-/home/said/noir/target/debug/nargo}"
+# An explicit ADAPTER is used as is; only the default debug binary is rebuilt.
+ADAPTER_PREBUILT="${ADAPTER:+1}"
 ADAPTER="${ADAPTER:-$ROOT/target/debug/noir-picus-adapter}"
 TIMEOUT_MS="${NOIR_PICUS_TIMEOUT_MS:-3000}"
 SCAN_WALL_TIMEOUT_SEC="${NOIR_PICUS_SCAN_WALL_TIMEOUT_SEC:-30}"
@@ -97,10 +99,12 @@ command -v cargo >/dev/null 2>&1 || fail "cargo is required"
 command -v timeout >/dev/null 2>&1 || fail "coreutils timeout is required"
 require_executable "$NARGO" "nargo"
 
-(
-  cd "$ROOT"
-  cargo build --quiet
-)
+if [[ -z "$ADAPTER_PREBUILT" ]]; then
+  (
+    cd "$ROOT"
+    cargo build --quiet
+  )
+fi
 require_executable "$ADAPTER" "noir-picus-adapter"
 
 assert_header "$MANIFEST" $'case\tartifact\texpected_compile\tscan_fixed\tscan_targets\tscan_solver\tscan_theory\texpected_scan\texpected_execute_output\tsource_family'

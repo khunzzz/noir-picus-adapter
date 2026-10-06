@@ -411,6 +411,7 @@ fn scan(args: ScanArgs) -> Result<()> {
                     AbiNaming::new(abi, n_param_witnesses, circuit.return_values.0.len())
                 });
 
+            let unread_hints = translate::unread_hint_outputs(circuit);
             let mut target_reports = Vec::new();
             for target in discovered_targets {
                 let witness = target.witness;
@@ -427,38 +428,42 @@ fn scan(args: ScanArgs) -> Result<()> {
                 // reporting it as `unsupported` because something unrelated in
                 // its component is untranslated is pure noise.
                 let target_unsupported_reasons = model.unsupported_reasons_for_target(witness);
-                let mut target_report = if args.no_solve && !model.is_trivially_determined(witness)
-                {
-                    TargetReport::not_solved(target)
-                } else if model.is_trivially_determined(witness)
-                    || target_unsupported_reasons.is_empty()
-                {
-                    // A solver failure is confined to its own target: a batch
-                    // scan must not lose every other verdict because one query
-                    // blew up. With `--target-timeout` the isolation is a real
-                    // process boundary, so a solver that overruns its own time
-                    // limit cannot hang the run either.
-                    let solved = match args.target_timeout {
-                        Some(budget_ms) if !model.is_trivially_determined(witness) => {
-                            solve_target_out_of_process(
-                                &args,
-                                program_index,
-                                circuit_index,
-                                &target,
-                                budget_ms,
-                            )
+                let mut target_report =
+                    if unread_hints.contains(&witness) && !model.is_trivially_determined(witness) {
+                        TargetReport::unread_hint(target)
+                    } else if model.is_isolated(circuit, witness) {
+                        TargetReport::isolated_hint(target)
+                    } else if args.no_solve && !model.is_trivially_determined(witness) {
+                        TargetReport::not_solved(target)
+                    } else if model.is_trivially_determined(witness)
+                        || target_unsupported_reasons.is_empty()
+                    {
+                        // A solver failure is confined to its own target: a batch
+                        // scan must not lose every other verdict because one query
+                        // blew up. With `--target-timeout` the isolation is a real
+                        // process boundary, so a solver that overruns its own time
+                        // limit cannot hang the run either.
+                        let solved = match args.target_timeout {
+                            Some(budget_ms) if !model.is_trivially_determined(witness) => {
+                                solve_target_out_of_process(
+                                    &args,
+                                    program_index,
+                                    circuit_index,
+                                    &target,
+                                    budget_ms,
+                                )
+                            }
+                            _ => None,
+                        };
+                        match solved.unwrap_or_else(|| {
+                            solver::solve_target(&model, circuit, &target, &solver_options, &label)
+                        }) {
+                            Ok(report) => report,
+                            Err(error) => TargetReport::failed(target, format!("{error:#}")),
                         }
-                        _ => None,
+                    } else {
+                        TargetReport::unsupported(target, target_unsupported_reasons.join("; "))
                     };
-                    match solved.unwrap_or_else(|| {
-                        solver::solve_target(&model, circuit, &target, &solver_options, &label)
-                    }) {
-                        Ok(report) => report,
-                        Err(error) => TargetReport::failed(target, format!("{error:#}")),
-                    }
-                } else {
-                    TargetReport::unsupported(target, target_unsupported_reasons.join("; "))
-                };
                 summary.record(target_report.status);
                 target_report.abstraction_notes = model.abstraction_reasons_for_target(witness);
                 target_report.abi_name = annotations.abi_name;

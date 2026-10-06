@@ -299,8 +299,49 @@ fn check_black_box(black_box: &BlackBoxFuncCall<FieldElement>, values: &WitnessV
             num_bits,
             output,
         } => check_bitwise(lhs, rhs, *num_bits, *output, values, |a, b| a ^ b, "XOR"),
+        BlackBoxFuncCall::Poseidon2Permutation { inputs, outputs } => {
+            let expected = match poseidon2_outputs(inputs, values) {
+                Some(Ok(expected)) => expected,
+                Some(Err(error)) => return Check::Violated(error),
+                None => return Check::Unsupported("POSEIDON2 input is unassigned".to_owned()),
+            };
+            for (witness, expected) in outputs.iter().zip(expected) {
+                match values.get(&witness.witness_index()) {
+                    Some(actual) if *actual == expected => {}
+                    Some(actual) => {
+                        return Check::Violated(format!(
+                            "POSEIDON2 output {actual} does not match {expected}"
+                        ));
+                    }
+                    None => return Check::Unsupported("POSEIDON2 output is unassigned".to_owned()),
+                }
+            }
+            Check::Satisfied
+        }
         other => Check::Unsupported(format!("black box {}", other.name())),
     }
+}
+
+/// The permuted state for a `POSEIDON2_PERMUTATION` call, computed by ACVM's
+/// own bn254 solver. `None` while an input is still unassigned; `Err` when the
+/// call itself is malformed (a wrong state width), which no witness satisfies.
+///
+/// Without this, every circuit that hashes a commitment — most real Noir
+/// programs — re-checked as "incomplete", and `mutate` silently skipped it:
+/// no honest witness certified, so the search ran zero attempts and reported
+/// zero findings.
+pub(crate) fn poseidon2_outputs(
+    inputs: &[FunctionInput<FieldElement>],
+    values: &WitnessValues,
+) -> Option<Result<Vec<FieldElement>, String>> {
+    let state = inputs
+        .iter()
+        .map(|input| resolve(input, values))
+        .collect::<Option<Vec<_>>>()?;
+    Some(
+        bn254_blackbox_solver::poseidon2_permutation(&state)
+            .map_err(|error| format!("POSEIDON2 rejects its input: {error}")),
+    )
 }
 
 fn check_bitwise(

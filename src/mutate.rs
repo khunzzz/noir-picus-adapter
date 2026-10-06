@@ -138,6 +138,9 @@ pub(crate) struct MutationFunnel {
     /// Accepted repairs that left every return value unchanged, so the
     /// divergence stayed internal and is not exploitable.
     pub(crate) internal_only: usize,
+    /// Witnesses that moved without moving a return and were then pushed
+    /// across their range (see `escalation_values`).
+    pub(crate) escalated: usize,
     /// Input assignments the constraint system accepted.
     pub(crate) accepted_inputs: usize,
     /// Attempts a constraint refuted outright. These are real results: the
@@ -161,6 +164,7 @@ impl MutationReport {
         self.funnel.repaired += other.funnel.repaired;
         self.funnel.accepted += other.funnel.accepted;
         self.funnel.internal_only += other.funnel.internal_only;
+        self.funnel.escalated += other.funnel.escalated;
         self.funnel.accepted_inputs += other.funnel.accepted_inputs;
         self.funnel.refuted += other.funnel.refuted;
         self.funnel.unjudged += other.funnel.unjudged;
@@ -283,6 +287,7 @@ pub(crate) fn search(
     // Mutating a witness that *is* pinned costs one rejected forward solve, so
     // the extra candidates are cheap; mutating one that is not is exactly the
     // finding being looked for.
+    let widths = range_widths(circuit);
     for hint in attack_surface(circuit, honest, &inputs) {
         let Some(original) = honest.get(&hint).copied() else {
             continue;
@@ -297,7 +302,16 @@ pub(crate) fn search(
                 .flatten()
                 .map(|step| original + *step),
         );
-        for alternative in values {
+        // Escalation. A witness that moved by a small step without moving a
+        // return is free, but a small step can be absorbed downstream — a
+        // remainder shifted by one disappears in a rounding — so the same
+        // freedom is tried again with steps across the witness's whole range.
+        // Only witnesses that already proved movable pay for this.
+        let mut escalated = false;
+        let mut index = 0;
+        while index < values.len() {
+            let alternative = values[index];
+            index += 1;
             report.attempted += 1;
             let outcome = repair(circuit, honest, &inputs, &hints, hint, alternative);
             report.funnel.record(&outcome);
@@ -316,6 +330,15 @@ pub(crate) fn search(
                 .collect::<BTreeMap<_, _>>();
             if diverging.is_empty() {
                 report.funnel.internal_only += 1;
+                if !escalated {
+                    escalated = true;
+                    report.funnel.escalated += 1;
+                    let more = escalation_values(original, widths.get(&hint).copied())
+                        .into_iter()
+                        .filter(|value| !values.contains(value))
+                        .collect::<Vec<_>>();
+                    values.extend(more);
+                }
                 continue;
             }
 
@@ -432,6 +455,34 @@ fn candidate_values(original: FieldElement, attempts: usize) -> Vec<FieldElement
     values.retain(|value| *value != original);
     values.dedup();
     values.truncate(attempts.max(1));
+    values
+}
+
+/// Steps across a witness's range, for one that has already moved freely.
+///
+/// `candidate_values` probes the neighbourhood; this probes the scale. Each
+/// power of two up to the witness's `RANGE` width (the whole field when it has
+/// none) is tried in both directions, plus the top of the range, so a freedom
+/// that only surfaces at a large offset is still reached in a few dozen
+/// repairs. Deterministic on purpose: a finding has to reproduce.
+fn escalation_values(original: FieldElement, width: Option<u32>) -> Vec<FieldElement> {
+    let width = width.unwrap_or(FieldElement::max_num_bits() - 1).max(2);
+    let power = |bits: u32| {
+        FieldElement::from_be_bytes_reduce(&(BigUint::from(1u32) << bits).to_bytes_be())
+    };
+    let mut values = Vec::new();
+    let mut bits = 2;
+    while bits < width {
+        values.push(original + power(bits));
+        values.push(original - power(bits));
+        bits += if bits < 8 { 2 } else { 4 };
+    }
+    values.push(original + power(width - 1));
+    values.push(original - power(width - 1));
+    let top = (BigUint::from(1u32) << width) - BigUint::from(1u32);
+    values.push(FieldElement::from_be_bytes_reduce(&top.to_bytes_be()));
+    values.retain(|value| *value != original);
+    values.dedup();
     values
 }
 
@@ -1086,6 +1137,28 @@ fn derive_black_box(
         } => derive_bitwise(lhs, rhs, *num_bits, *output, assignment, derived, |a, b| {
             a ^ b
         }),
+        // A permutation is a function, so a moved input moves its outputs to
+        // exactly one place. Computing that place keeps the search alive past
+        // a hash instead of rejecting every mutation that reaches one.
+        BlackBoxFuncCall::Poseidon2Permutation { inputs, outputs } => {
+            let expected = match crate::certify::poseidon2_outputs(inputs, assignment) {
+                Some(Ok(expected)) => expected,
+                Some(Err(_)) => return BlackBoxOutcome::Rejected,
+                None => return BlackBoxOutcome::Deferred,
+            };
+            for (witness, value) in outputs.iter().zip(expected) {
+                let index = witness.witness_index();
+                match assignment.get(&index) {
+                    Some(existing) if *existing == value => {}
+                    Some(_) => return BlackBoxOutcome::Rejected,
+                    None => {
+                        assignment.insert(index, value);
+                        *derived += 1;
+                    }
+                }
+            }
+            BlackBoxOutcome::Done
+        }
         other => {
             let mut all_present = true;
             for witness in other.get_input_witnesses() {

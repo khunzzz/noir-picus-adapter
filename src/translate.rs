@@ -48,6 +48,52 @@ mod tests;
 pub(crate) use ir::{field_modulus, picus_wire, target_signal};
 pub(crate) use wires::opcode_wires;
 
+/// Hint outputs that no constraint reads.
+///
+/// A `BrilligCall` output appears in the opcodes only where something
+/// constrains it; one that appears nowhere else — not in an assertion, a black
+/// box, a memory operation or a call, and not as a parameter or return — is
+/// free, but nothing it could take affects any other witness. Noir emits them
+/// whenever a hint returns a tuple and the caller discards part of it
+/// (`let (quotient, _) = unsafe { hint() }`); Noir's own missing-constraint
+/// check reports each one as a bug. Telling them apart from real unknowns keeps
+/// a scan's `unknown` column about what is actually undecided.
+pub(crate) fn unread_hint_outputs(
+    circuit: &acir::circuit::Circuit<FieldElement>,
+) -> std::collections::BTreeSet<acir::native_types::Witness> {
+    use acir::circuit::{Opcode, brillig::BrilligOutputs};
+    let mut read = std::collections::BTreeSet::new();
+    for opcode in &circuit.opcodes {
+        read.extend(opcode_wires(opcode));
+    }
+    for witness in circuit
+        .private_parameters
+        .iter()
+        .chain(circuit.public_parameters.0.iter())
+        .chain(circuit.return_values.0.iter())
+    {
+        read.insert(picus_wire(*witness));
+    }
+    let mut unread = std::collections::BTreeSet::new();
+    for opcode in &circuit.opcodes {
+        let Opcode::BrilligCall { outputs, .. } = opcode else {
+            continue;
+        };
+        for output in outputs {
+            let witnesses = match output {
+                BrilligOutputs::Simple(witness) => vec![*witness],
+                BrilligOutputs::Array(witnesses) => witnesses.clone(),
+            };
+            unread.extend(
+                witnesses
+                    .into_iter()
+                    .filter(|witness| !read.contains(&picus_wire(*witness))),
+            );
+        }
+    }
+    unread
+}
+
 use bitwise::{BitwiseCall, BitwiseOp, bitwise_constraint_group};
 use determinism::{call_determinism_group, determinism_constraint_group};
 use expr::expression_to_ir;
@@ -550,6 +596,41 @@ impl AcirPicusModel {
     pub(crate) fn is_trivially_determined(&self, target: Witness) -> bool {
         let signal = target_signal(target);
         self.input_indices.contains(&signal) || self.fixed_known_signals.contains(&signal)
+    }
+
+    /// Whether `target` is undetermined but sealed off: every opcode that reads
+    /// it reads nothing else that is undetermined. Its value can then differ
+    /// between two assignments without any other witness differing, so it
+    /// cannot carry a divergence anywhere — the inverse hint of an `IsZero`
+    /// gadget, free exactly when the tested value is zero, is the usual case.
+    /// The witness itself may well be free; this only says nothing depends on
+    /// it.
+    pub(crate) fn is_isolated(&self, circuit: &Circuit<FieldElement>, target: Witness) -> bool {
+        if self.is_trivially_determined(target) {
+            return false;
+        }
+        let wire = picus_wire(target);
+        let determined =
+            |w: &usize| self.input_indices.contains(w) || self.fixed_known_signals.contains(w);
+        let mut readers = 0usize;
+        for opcode in &circuit.opcodes {
+            let wires = opcode_wires(opcode);
+            if !wires.contains(&wire) {
+                continue;
+            }
+            readers += 1;
+            if !wires.iter().all(|w| *w == wire || determined(w)) {
+                return false;
+            }
+        }
+        let is_interface = circuit
+            .return_values
+            .0
+            .iter()
+            .chain(circuit.public_parameters.0.iter())
+            .chain(circuit.private_parameters.iter())
+            .any(|w| *w == target);
+        readers > 0 && !is_interface
     }
 
     pub(crate) fn unsupported_reasons_for_target(&self, target: Witness) -> Vec<String> {
