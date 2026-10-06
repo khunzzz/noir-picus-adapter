@@ -1,0 +1,6 @@
+[package]
+name = "poc"
+type = "bin"
+authors = [""]
+[dependencies]
+lib = { path = "../interfold/circuits/lib" }

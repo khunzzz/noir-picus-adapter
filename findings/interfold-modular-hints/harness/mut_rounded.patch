@@ -1,0 +1,11 @@
+--- a/circuits/lib/src/core/threshold/decrypted_shares_aggregation.nr
++++ b/circuits/lib/src/core/threshold/decrypted_shares_aggregation.nr
+@@ -280,7 +280,7 @@
+     // Safety: the quotient bound and the canonical remainder interval below pin the rounding.
+     let rounded = unsafe { divide_big_hint(numerator, q_total) };
+     rounded.assert_max_bit_size::<BIT_T>();
+-    assert_in_range::<BIT_Q_TOTAL>(numerator - q_total * rounded, q_total);
++    (numerator - q_total * rounded).assert_max_bit_size::<BIT_Q_TOTAL>(); // MUTANT: upper bound dropped
+ 
+     // `u` near the top of `[0, Q)` rounds to exactly `t`, which represents plaintext zero.
+     if rounded == t {

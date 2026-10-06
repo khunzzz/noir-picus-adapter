@@ -1,0 +1,12 @@
+--- a/circuits/lib/src/math/modulo/U128.nr
++++ b/circuits/lib/src/math/modulo/U128.nr
+@@ -238,8 +238,7 @@
+ pub fn reduce_mod_bounded<let BIT_Q: u32, let BIT_K: u32>(n: Field, q: Field) -> Field {
+     // Safety: the quotient bound and the canonical remainder interval below fix the division, so a
+     // wrong hint cannot satisfy both.
+-    let (quotient, _) = unsafe { __compute_mod_reduction(n, q) };
+-    quotient.assert_max_bit_size::<BIT_K>();
++    let (quotient, _) = unsafe { __compute_mod_reduction(n, q) }; // MUTANT: quotient unbounded
+     let remainder = n - q * quotient;
+     assert_in_range::<BIT_Q>(remainder, q);
+     remainder

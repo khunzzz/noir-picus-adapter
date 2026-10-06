@@ -1,0 +1,55 @@
+--- a/circuits/lib/src/core/threshold/decrypted_shares_aggregation.nr
++++ b/circuits/lib/src/core/threshold/decrypted_shares_aggregation.nr
+@@ -122,6 +122,52 @@
+             assert_decoded_coefficient(decoded, self.message.coefficients[j]);
+         }
+     }
++
++    /// HARNESS (not upstream): same checks as `execute`, but returns the decoded coefficients
++    /// instead of comparing them to `message`, so a scanner can ask whether the plaintext is
++    /// uniquely determined by the shares and party ids.
++    pub fn execute_decode(self) -> [Field; MAX_MSG_NON_ZERO_COEFFS] {
++        let mut out = [0 as Field; MAX_MSG_NON_ZERO_COEFFS];
++        let mut q_total: Field = 1;
++        for l in 0..L {
++            q_total *= self.configs.qis[l];
++        }
++        for party_idx in 0..(T + 1) {
++            for l in 0..L {
++                for j in 0..MAX_MSG_NON_ZERO_COEFFS {
++                    assert_in_range::<BIT_Q>(
++                        self.decryption_shares[party_idx][l].coefficients[j],
++                        self.configs.qis[l],
++                    );
++                }
++            }
++            let computed = compute_threshold_decryption_share_commitment::<MAX_MSG_NON_ZERO_COEFFS, L, BIT_D_NATIVE>(
++                self.decryption_shares[party_idx],
++            );
++            assert(computed == self.expected_d_commitments[party_idx], "d commitment mismatch");
++        }
++        let coefficients = lagrange_coefficients::<T + 1, L, BIT_Q, BIT_K>(
++            self.configs.qis,
++            self.party_ids,
++            N_PARTIES,
++        );
++        let t = self.configs.plaintext_modulus;
++        let half = (q_total - 1) / 2;
++        for j in 0..MAX_MSG_NON_ZERO_COEFFS {
++            let mut residues = [0 as Field; L];
++            for l in 0..L {
++                let mut sum: Field = 0;
++                for h in 0..(T + 1) {
++                    sum += self.decryption_shares[h][l].coefficients[j] * coefficients[l][h];
++                }
++                sum.assert_max_bit_size::<128>();
++                residues[l] = reduce_mod_bounded::<BIT_Q, BIT_K>(sum, self.configs.qis[l]);
++            }
++            let u = garner_reconstruct::<L, BIT_Q, BIT_K>(residues, self.configs.qis);
++            out[j] = rounded_decode::<BIT_T, BIT_Q_TOTAL>(u, t, q_total, half);
++        }
++        out
++    }
+ }
+ 
+ /// `Q` exceeds 128 bits on the secure preset, so the rounded decode divides with a bignum.
