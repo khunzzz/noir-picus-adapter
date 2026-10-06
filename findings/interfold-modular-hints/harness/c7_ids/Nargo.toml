@@ -1,0 +1,7 @@
+[package]
+name = "c7_ids"
+type = "bin"
+authors = ["harness"]
+
+[dependencies]
+lib = { path = "../../../lib" }
