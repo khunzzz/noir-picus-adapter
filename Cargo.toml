@@ -25,6 +25,21 @@ git = "https://github.com/noir-lang/noir.git"
 rev = "40d6574f851d926f93e0c3a271bac3e6e82ac905"
 package = "acir"
 
+# Concrete execution: the ACVM runs Brillig hints and evaluates black boxes
+# (Poseidon2, SHA-256, ...) so the dynamic path can follow a value through a
+# hash and the certificate can check one. Same revision as `acir`, so both
+# resolve to the one `acir` crate.
+[dependencies.acvm]
+git = "https://github.com/noir-lang/noir.git"
+rev = "40d6574f851d926f93e0c3a271bac3e6e82ac905"
+package = "acvm"
+features = ["bn254"]
+
+[dependencies.bn254_blackbox_solver]
+git = "https://github.com/noir-lang/noir.git"
+rev = "40d6574f851d926f93e0c3a271bac3e6e82ac905"
+package = "bn254_blackbox_solver"
+
 [dependencies.picus-smt]
 git = "https://github.com/chyanju/picus.git"
 rev = "7cb6d450a455bde7f447b831d79da343fa4ef084"
