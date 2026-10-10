@@ -9,6 +9,12 @@ VULNERABLE_DIR="$CORPUS_DIR/vulnerable"
 ARTIFACTS_DIR="$CORPUS_DIR/artifacts"
 
 NARGO="${NARGO:-/home/said/noir/target/debug/nargo}"
+# An explicit ADAPTER is used as given; only the default debug binary is
+# (re)built here.
+BUILD_ADAPTER=0
+if [[ -z "${ADAPTER:-}" ]]; then
+  BUILD_ADAPTER=1
+fi
 ADAPTER="${ADAPTER:-$ROOT/target/debug/noir-picus-adapter}"
 TIMEOUT_MS="${NOIR_PICUS_TIMEOUT_MS:-3000}"
 OUT_DIR="${NOIR_PICUS_CORPUS_OUT:-/tmp/noir-picus-corpus}"
@@ -95,10 +101,12 @@ command -v rg >/dev/null 2>&1 || fail "rg is required"
 command -v cargo >/dev/null 2>&1 || fail "cargo is required"
 require_executable "$NARGO" "nargo"
 
-(
-  cd "$ROOT"
-  cargo build --quiet
-)
+if [[ "$BUILD_ADAPTER" == "1" ]]; then
+  (
+    cd "$ROOT"
+    cargo build --quiet
+  )
+fi
 require_executable "$ADAPTER" "noir-picus-adapter"
 
 assert_header "$MANIFEST" $'case\tartifact\tfixed\ttargets\texpected\tsource_family'
