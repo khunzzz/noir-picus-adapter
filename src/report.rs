@@ -225,6 +225,30 @@ impl TargetReport {
         report
     }
 
+    /// A hint output that no constraint reads (see
+    /// `translate::unread_hint_outputs`). Free, so not `verified`; but it
+    /// cannot reach any other witness, so it is not sent to the solver, which
+    /// would only confirm the freedom.
+    pub(crate) fn unread_hint(target: Target) -> Self {
+        let mut report = Self::unsupported(
+            target,
+            "hint output that no constraint reads: free, but nothing depends on it".to_owned(),
+        );
+        report.status = TargetStatus::Unknown;
+        report
+    }
+
+    /// An undetermined target that only touches determined witnesses (see
+    /// `AcirPicusModel::is_isolated`): whatever it takes, nothing else moves.
+    pub(crate) fn isolated_hint(target: Target) -> Self {
+        let mut report = Self::unsupported(
+            target,
+            "free only inside its own check: every other witness that reads it is determined, so nothing depends on it".to_owned(),
+        );
+        report.status = TargetStatus::Unknown;
+        report
+    }
+
     /// A target abandoned because it overran its wall-clock budget.
     pub(crate) fn timed_out(target: Target, budget_ms: u64) -> Self {
         let mut report = Self::unsupported(
