@@ -23,7 +23,7 @@ use acir::{
 
 /// What one opcode does to the witness.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Role {
+pub(crate) enum Role {
     /// A `BrilligCall` produces it: the prover's free choice.
     Defines,
     /// A bound — a range check — which restricts the value without fixing it.
@@ -36,12 +36,12 @@ pub enum Role {
 
 /// One opcode that mentions the witness.
 #[derive(Debug, Clone)]
-pub struct Touch {
-    pub index: usize,
-    pub role: Role,
-    pub description: String,
+pub(crate) struct Touch {
+    pub(crate) index: usize,
+    pub(crate) role: Role,
+    pub(crate) description: String,
     /// Other witnesses in this opcode that moved in the same finding.
-    pub moved_with: Vec<u32>,
+    pub(crate) moved_with: Vec<u32>,
     /// The witness appears only inside product terms here, so its coefficient
     /// is itself a witness and may be zero.
     ///
@@ -49,12 +49,12 @@ pub struct Touch {
     /// reads as pinning `h`, and does pin it when `c` is one, but for `c` zero
     /// the equation holds for every `h`. Counting such an assertion as pinning
     /// is what made this pass miss the predicated case entirely.
-    pub may_vanish: bool,
+    pub(crate) may_vanish: bool,
 }
 
 /// What the opcode list says about the witness.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Verdict {
+pub(crate) enum Verdict {
     /// Nothing at all mentions it beyond its definition.
     Unconstrained,
     /// Only its definition and bounds mention it, so no opcode can fix its
@@ -79,10 +79,10 @@ pub enum Verdict {
 }
 
 #[derive(Debug, Clone)]
-pub struct Explanation {
-    pub witness: u32,
-    pub touches: Vec<Touch>,
-    pub verdict: Verdict,
+pub(crate) struct Explanation {
+    pub(crate) witness: u32,
+    pub(crate) touches: Vec<Touch>,
+    pub(crate) verdict: Verdict,
 }
 
 impl Explanation {
@@ -96,10 +96,11 @@ impl Explanation {
     /// digit looks free and the report drowns. Recognising the shape is the
     /// cheapest way to keep the pass usable; the cost is that a genuinely free
     /// boolean hint is skipped too, which `--include-bits` puts back.
-    pub fn looks_like_a_decomposition_digit(&self) -> bool {
-        let single_bit = self.touches.iter().any(|touch| {
-            touch.role == Role::Bounds && touch.description.ends_with("to 1 bits")
-        });
+    pub(crate) fn looks_like_a_decomposition_digit(&self) -> bool {
+        let single_bit = self
+            .touches
+            .iter()
+            .any(|touch| touch.role == Role::Bounds && touch.description.ends_with("to 1 bits"));
         single_bit
             && self
                 .touches
@@ -147,11 +148,7 @@ fn companions(
 /// not merely zero for some assignment: every coefficient left has to vanish.
 /// That is what distinguishes a constraint which stops saying anything from one
 /// which becomes impossible to satisfy.
-fn vanishes_when(
-    expression: &Expression<FieldElement>,
-    partner: u32,
-    value: FieldElement,
-) -> bool {
+fn vanishes_when(expression: &Expression<FieldElement>, partner: u32, value: FieldElement) -> bool {
     let mut linear: std::collections::BTreeMap<u32, FieldElement> = Default::default();
     let mut constant = expression.q_c;
 
@@ -207,9 +204,8 @@ fn vanishes_when(
 /// принадлежность нижней половине — это и есть проверка, что коэффициент
 /// действительно неотрицателен, а не большое число, ведущее себя как минус.
 fn nonneg_value(value: FieldElement) -> Option<BigUint> {
-    let n = BigUint::from_bytes_be(&value.to_be_bytes());
-    let modulus = crate::translate::field_modulus();
-    if n * BigUint::from(2u32) < modulus { Some(BigUint::from_bytes_be(&value.to_be_bytes())) } else { None }
+    let n = crate::field::to_biguint(value);
+    (&n * BigUint::from(2u32) < crate::translate::field_modulus()).then_some(n)
 }
 
 /// Сигналы, про которые доказано, что они НИКОГДА не равны нулю.
@@ -228,7 +224,7 @@ fn nonneg_value(value: FieldElement) -> Option<BigUint> {
 /// Признаётся форма `w = <неотрицательная комбинация ограниченных сигналов> + c`
 /// при `c >= 1`, где вся сумма меньше модуля. Тогда `w` лежит в отрезке
 /// `[c, сумма]`, заворачивания нет, и нуля быть не может.
-pub fn provably_nonzero(
+pub(crate) fn provably_nonzero(
     circuit: &Circuit<FieldElement>,
     bounds: &std::collections::BTreeMap<u32, BigUint>,
 ) -> BTreeSet<u32> {
@@ -250,9 +246,7 @@ pub fn provably_nonzero(
             } else {
                 continue;
             };
-            let sign = |value: FieldElement| {
-                nonneg_value(if negate { -value } else { value })
-            };
+            let sign = |value: FieldElement| nonneg_value(if negate { -value } else { value });
             let target = target_witness.witness_index();
             let Some(constant) = sign(expression.q_c) else {
                 continue;
@@ -330,9 +324,7 @@ fn derived_bounds(
                 } else {
                     continue;
                 };
-                let sign = |value: FieldElement| {
-                    nonneg_value(if negate { -value } else { value })
-                };
+                let sign = |value: FieldElement| nonneg_value(if negate { -value } else { value });
                 let Some(constant) = sign(expression.q_c) else {
                     continue;
                 };
@@ -446,7 +438,11 @@ fn coefficient_may_vanish(
                 && (lhs.witness_index() == witness || rhs.witness_index() == witness)
         })
         .map(|(_, lhs, rhs)| {
-            if lhs.witness_index() == witness { rhs.witness_index() } else { lhs.witness_index() }
+            if lhs.witness_index() == witness {
+                rhs.witness_index()
+            } else {
+                lhs.witness_index()
+            }
         })
         .filter(|partner| *partner != witness)
         .collect::<BTreeSet<_>>();
@@ -476,7 +472,7 @@ fn mentions(expression: &Expression<FieldElement>, witness: u32) -> bool {
 ///
 /// A program that routes its result through `return_data` leaves
 /// `return_values` empty, so reading only that field misses every such circuit.
-pub fn exposed_witnesses(circuit: &Circuit<FieldElement>) -> BTreeSet<u32> {
+pub(crate) fn exposed_witnesses(circuit: &Circuit<FieldElement>) -> BTreeSet<u32> {
     let mut exposed = circuit
         .return_values
         .0
@@ -484,10 +480,12 @@ pub fn exposed_witnesses(circuit: &Circuit<FieldElement>) -> BTreeSet<u32> {
         .map(|witness| witness.witness_index())
         .collect::<BTreeSet<_>>();
     for opcode in &circuit.opcodes {
-        if let Opcode::MemoryInit { init, block_type, .. } = opcode {
-            if matches!(block_type, acir::circuit::opcodes::BlockType::ReturnData) {
-                exposed.extend(init.iter().map(|witness| witness.witness_index()));
-            }
+        if let Opcode::MemoryInit {
+            init, block_type, ..
+        } = opcode
+            && matches!(block_type, acir::circuit::opcodes::BlockType::ReturnData)
+        {
+            exposed.extend(init.iter().map(|witness| witness.witness_index()));
         }
     }
     exposed
@@ -500,7 +498,7 @@ pub fn exposed_witnesses(circuit: &Circuit<FieldElement>) -> BTreeSet<u32> {
 /// the ones that do reach an output are a soundness question, and this is what
 /// separates the two. Without it the pass reports every hint in a program whose
 /// `main` is entirely unconstrained, where there is nothing to pin by design.
-pub fn reachable_from_outputs(
+pub(crate) fn reachable_from_outputs(
     circuit: &Circuit<FieldElement>,
     undetermined: &BTreeSet<u32>,
 ) -> BTreeSet<u32> {
@@ -523,9 +521,12 @@ pub fn reachable_from_outputs(
                         .iter()
                         .map(|(_, witness)| witness.witness_index()),
                 );
-                reached.extend(expression.mul_terms.iter().flat_map(|(_, lhs, rhs)| {
-                    [lhs.witness_index(), rhs.witness_index()]
-                }));
+                reached.extend(
+                    expression
+                        .mul_terms
+                        .iter()
+                        .flat_map(|(_, lhs, rhs)| [lhs.witness_index(), rhs.witness_index()]),
+                );
             }
         }
     }
@@ -566,10 +567,7 @@ pub fn reachable_from_outputs(
 /// Every `!=` and every integer comparison compiles to one, so leaving it out
 /// meant a scan of real programs reported the gadget over and over. `bit_and`
 /// in Noir's corpus produced twelve candidates, all of them this.
-fn is_zero_gadgets(
-    circuit: &Circuit<FieldElement>,
-    determined: &BTreeSet<u32>,
-) -> Vec<(u32, u32)> {
+fn is_zero_gadgets(circuit: &Circuit<FieldElement>, determined: &BTreeSet<u32>) -> Vec<(u32, u32)> {
     let free = |witness: u32| !determined.contains(&witness);
     // Candidate flags from the vacuous half: every term is a product with the
     // flag, and the other side of each product is known.
@@ -595,7 +593,9 @@ fn is_zero_gadgets(
 
     let mut flags = BTreeSet::new();
     for opcode in &circuit.opcodes {
-        let Opcode::AssertZero(expression) = opcode else { continue };
+        let Opcode::AssertZero(expression) = opcode else {
+            continue;
+        };
         if !expression.q_c.is_zero() || expression.mul_terms.is_empty() {
             continue;
         }
@@ -609,19 +609,22 @@ fn is_zero_gadgets(
 
     let mut found = Vec::new();
     for opcode in &circuit.opcodes {
-        let Opcode::AssertZero(expression) = opcode else { continue };
+        let Opcode::AssertZero(expression) = opcode else {
+            continue;
+        };
         // The other half: `y*inv + flag - 1 = 0`.
         if expression.q_c != -FieldElement::one() || expression.mul_terms.is_empty() {
             continue;
         }
         // One plain term with coefficient one is the flag; everything else has
         // to factor through the inverse.
-        let Some((_, flag)) = expression
-            .linear_combinations
-            .iter()
-            .find(|(coefficient, witness)| {
-                *coefficient == FieldElement::one() && flags.contains(&witness.witness_index())
-            })
+        let Some((_, flag)) =
+            expression
+                .linear_combinations
+                .iter()
+                .find(|(coefficient, witness)| {
+                    *coefficient == FieldElement::one() && flags.contains(&witness.witness_index())
+                })
         else {
             continue;
         };
@@ -662,10 +665,7 @@ fn is_zero_gadgets(
 /// every entry of the block is; whichever entry is selected, it is a determined
 /// value. And a linear assertion with exactly one witness left determines it,
 /// provided its coefficient does not vanish.
-pub fn refine_determined(
-    circuit: &Circuit<FieldElement>,
-    determined: &mut BTreeSet<u32>,
-) {
+pub(crate) fn refine_determined(circuit: &Circuit<FieldElement>, determined: &mut BTreeSet<u32>) {
     // Границы расширяются один раз: производные сигналы и сужение по равенству
     // с константой. Дальше ими пользуются и правило деления, и признание
     // позиционного разложения.
@@ -750,11 +750,15 @@ pub fn refine_determined(
                         // index computed from them, which determines the value
                         // read out of an array, and so on down a chain that
                         // otherwise stayed free all the way to the output.
-                        many if many.len() >= 2 => {
-                            if pinned_by_positional_split(expression, &|w| !determined.contains(&w), &bounds) {
-                                for (_, witness) in many {
-                                    determined.insert(witness.witness_index());
-                                }
+                        many if many.len() >= 2
+                            && pinned_by_positional_split(
+                                expression,
+                                &|w| !determined.contains(&w),
+                                &bounds,
+                            ) =>
+                        {
+                            for (_, witness) in many {
+                                determined.insert(witness.witness_index());
                             }
                         }
                         _ => {}
@@ -812,16 +816,18 @@ fn unknown_factor_solvable(
     if expression
         .linear_combinations
         .iter()
-        .any(|(coefficient, witness)| {
-            !coefficient.is_zero() && witness.witness_index() == unknown
-        })
+        .any(|(coefficient, witness)| !coefficient.is_zero() && witness.witness_index() == unknown)
     {
         return None;
     }
     // всё остальное в линейной части обязано быть известным, иначе неизвестных два
-    if expression.linear_combinations.iter().any(|(coefficient, witness)| {
-        !coefficient.is_zero() && !determined.contains(&witness.witness_index())
-    }) {
+    if expression
+        .linear_combinations
+        .iter()
+        .any(|(coefficient, witness)| {
+            !coefficient.is_zero() && !determined.contains(&witness.witness_index())
+        })
+    {
         return None;
     }
     Some(unknown)
@@ -838,14 +844,16 @@ fn unknown_factor_solvable(
 ///
 /// Widths at or above 127 are skipped rather than saturated: these bounds get
 /// compared against divisors, and a wrong bound would be worse than none.
-pub fn value_bounds(circuit: &Circuit<FieldElement>) -> std::collections::BTreeMap<u32, BigUint> {
+pub(crate) fn value_bounds(
+    circuit: &Circuit<FieldElement>,
+) -> std::collections::BTreeMap<u32, BigUint> {
     let mut bounds: std::collections::BTreeMap<u32, BigUint> = Default::default();
     // Held as big integers rather than machine words. A cast splits a field
     // element into a small low part and a 246-bit high part, and dropping the
     // wide one for not fitting a `u128` left the high limb unbounded — which
     // made every cast look ambiguous, since in a field the high limb can always
     // absorb a change to the low one unless a bound forbids it.
-    let mut note = |bounds: &mut std::collections::BTreeMap<u32, BigUint>, witness, num_bits: u32| {
+    let note = |bounds: &mut std::collections::BTreeMap<u32, BigUint>, witness, num_bits: u32| {
         let max = (BigUint::from(1u32) << num_bits) - BigUint::from(1u32);
         bounds
             .entry(witness)
@@ -858,10 +866,11 @@ pub fn value_bounds(circuit: &Circuit<FieldElement>) -> std::collections::BTreeM
     };
     for opcode in &circuit.opcodes {
         match opcode {
-            Opcode::BlackBoxFuncCall(BlackBoxFuncCall::RANGE { input, num_bits }) => {
-                if let acir::circuit::opcodes::FunctionInput::Witness(witness) = input {
-                    note(&mut bounds, witness.witness_index(), *num_bits);
-                }
+            Opcode::BlackBoxFuncCall(BlackBoxFuncCall::RANGE {
+                input: acir::circuit::opcodes::FunctionInput::Witness(witness),
+                num_bits,
+            }) => {
+                note(&mut bounds, witness.witness_index(), *num_bits);
             }
             // AND and XOR bound their operands and result as a side effect, the
             // same fact Noir's own `redundant_range` pass relies on to drop
@@ -870,8 +879,18 @@ pub fn value_bounds(circuit: &Circuit<FieldElement>) -> std::collections::BTreeM
             // this way, with no `RANGE` opcode of its own — reading ranges alone
             // made every such cast look like an ambiguous split.
             Opcode::BlackBoxFuncCall(
-                BlackBoxFuncCall::AND { lhs, rhs, num_bits, output }
-                | BlackBoxFuncCall::XOR { lhs, rhs, num_bits, output },
+                BlackBoxFuncCall::AND {
+                    lhs,
+                    rhs,
+                    num_bits,
+                    output,
+                }
+                | BlackBoxFuncCall::XOR {
+                    lhs,
+                    rhs,
+                    num_bits,
+                    output,
+                },
             ) => {
                 for input in [lhs, rhs] {
                     if let acir::circuit::opcodes::FunctionInput::Witness(witness) = input {
@@ -888,7 +907,9 @@ pub fn value_bounds(circuit: &Circuit<FieldElement>) -> std::collections::BTreeM
     loop {
         let before = bounds.clone();
         for opcode in &circuit.opcodes {
-            let Opcode::AssertZero(expression) = opcode else { continue };
+            let Opcode::AssertZero(expression) = opcode else {
+                continue;
+            };
             if !expression.mul_terms.is_empty() || expression.linear_combinations.len() != 2 {
                 continue;
             }
@@ -910,21 +931,36 @@ pub fn value_bounds(circuit: &Circuit<FieldElement>) -> std::collections::BTreeM
                 (None, Some(offset)) => (offset, false),
                 (None, None) => continue,
             };
-            let (larger, smaller) =
-                if minus_is_larger { (minus, plus) } else { (plus, minus) };
+            let (larger, smaller) = if minus_is_larger {
+                (minus, plus)
+            } else {
+                (plus, minus)
+            };
             let offset = BigUint::from(offset);
             if let Some(max) = bounds.get(&larger).cloned() {
-                let derived = if max >= offset { max - &offset } else { BigUint::from(0u32) };
+                let derived = if max >= offset {
+                    max - &offset
+                } else {
+                    BigUint::from(0u32)
+                };
                 bounds
                     .entry(smaller)
-                    .and_modify(|k| { if derived < *k { *k = derived.clone(); } })
+                    .and_modify(|k| {
+                        if derived < *k {
+                            *k = derived.clone();
+                        }
+                    })
                     .or_insert(derived);
             }
             if let Some(max) = bounds.get(&smaller).cloned() {
                 let derived = max + &offset;
                 bounds
                     .entry(larger)
-                    .and_modify(|k| { if derived < *k { *k = derived.clone(); } })
+                    .and_modify(|k| {
+                        if derived < *k {
+                            *k = derived.clone();
+                        }
+                    })
                     .or_insert(derived);
             }
         }
@@ -1015,7 +1051,7 @@ fn pinned_by_positional_split(
 }
 
 /// Collect every opcode of `circuit` that mentions `witness`.
-pub fn explain(
+pub(crate) fn explain(
     circuit: &Circuit<FieldElement>,
     witness: u32,
     moved: &BTreeSet<u32>,
@@ -1027,7 +1063,7 @@ pub fn explain(
 ///
 /// The bounds are passed in rather than recomputed so a caller scanning every
 /// hint of a circuit collects them once.
-pub fn explain_with_bounds(
+pub(crate) fn explain_with_bounds(
     circuit: &Circuit<FieldElement>,
     witness: u32,
     moved: &BTreeSet<u32>,
@@ -1087,7 +1123,7 @@ pub fn explain_with_bounds(
                         role: Role::Other,
                         description: format!("MemoryOp on block {}", block_id.as_u32()),
                         moved_with: Vec::new(),
-                    may_vanish: false,
+                        may_vanish: false,
                     });
                 }
             }
@@ -1142,12 +1178,16 @@ pub fn explain_with_bounds(
         Verdict::Unconstrained
     };
 
-    Explanation { witness, touches, verdict }
+    Explanation {
+        witness,
+        touches,
+        verdict,
+    }
 }
 
 impl Explanation {
     /// One line naming what the opcode list establishes.
-    pub fn headline(&self) -> String {
+    pub(crate) fn headline(&self) -> String {
         match self.verdict {
             Verdict::Unconstrained => format!(
                 "w{} is produced and never mentioned again: the prover chooses it outright",
@@ -1190,7 +1230,10 @@ mod tests {
     use acir::native_types::Witness;
 
     fn circuit(opcodes: Vec<Opcode<FieldElement>>) -> Circuit<FieldElement> {
-        Circuit { opcodes, ..Default::default() }
+        Circuit {
+            opcodes,
+            ..Default::default()
+        }
     }
 
     /// `w1 - w2` with both moving is the shape of a hint copied to an output:
@@ -1240,7 +1283,11 @@ mod tests {
             linear_combinations: Vec::new(),
             q_c: FieldElement::zero(),
         };
-        let explanation = explain(&circuit(vec![Opcode::AssertZero(expression)]), 3, &BTreeSet::new());
+        let explanation = explain(
+            &circuit(vec![Opcode::AssertZero(expression)]),
+            3,
+            &BTreeSet::new(),
+        );
         assert!(explanation.touches[0].may_vanish);
         // Not `Unconstrained`: an assertion *is* present, it just cannot pin.
         // Saying otherwise would contradict the opcode list printed with it.
@@ -1261,7 +1308,11 @@ mod tests {
             linear_combinations: Vec::new(),
             q_c: -FieldElement::one(),
         };
-        let explanation = explain(&circuit(vec![Opcode::AssertZero(expression)]), 2, &BTreeSet::new());
+        let explanation = explain(
+            &circuit(vec![Opcode::AssertZero(expression)]),
+            2,
+            &BTreeSet::new(),
+        );
         assert!(!explanation.touches[0].may_vanish);
     }
 
@@ -1281,7 +1332,11 @@ mod tests {
             ],
             q_c: FieldElement::zero(),
         };
-        let explanation = explain(&circuit(vec![Opcode::AssertZero(expression)]), 2, &BTreeSet::new());
+        let explanation = explain(
+            &circuit(vec![Opcode::AssertZero(expression)]),
+            2,
+            &BTreeSet::new(),
+        );
         assert!(explanation.touches[0].may_vanish);
     }
 

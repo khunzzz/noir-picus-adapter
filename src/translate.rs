@@ -455,19 +455,11 @@ pub(crate) fn build_model_with_calls(
                 let callee_proved = deterministic_calls.contains(&(id.as_usize() as u32));
                 // Предикат сам по себе может нести свободу, поэтому его сигналы
                 // входят в число входов вызова.
-                let mut input_wires =
-                    inputs.iter().copied().map(picus_wire).collect::<Vec<_>>();
+                let mut input_wires = inputs.iter().copied().map(picus_wire).collect::<Vec<_>>();
                 input_wires.extend(expression_wires(predicate));
-                let output_wires =
-                    outputs.iter().copied().map(picus_wire).collect::<Vec<_>>();
+                let output_wires = outputs.iter().copied().map(picus_wire).collect::<Vec<_>>();
                 match callee_proved
-                    .then(|| {
-                        call_determinism_group(
-                            input_wires,
-                            output_wires,
-                            &input_indices,
-                        )
-                    })
+                    .then(|| call_determinism_group(input_wires, output_wires, &input_indices))
                     .flatten()
                 {
                     Some((wires, orig)) => {

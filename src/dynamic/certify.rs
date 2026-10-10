@@ -39,6 +39,8 @@ use acir::{
     native_types::{Expression, Witness},
 };
 use num_bigint::BigUint;
+
+use crate::field::{resolve, to_biguint, to_usize};
 use serde::{Deserialize, Serialize};
 
 /// One assignment of ACIR witnesses, as produced by the solver.
@@ -301,8 +303,8 @@ fn check_black_box(black_box: &BlackBoxFuncCall<FieldElement>, values: &WitnessV
             num_bits,
             output,
         } => check_bitwise(lhs, rhs, *num_bits, *output, values, |a, b| a ^ b, "XOR"),
-        other => match crate::concrete::eval_black_box(other, values) {
-            crate::concrete::BlackBoxEval::Outputs(outputs) => {
+        other => match crate::dynamic::concrete::eval_black_box(other, values) {
+            crate::dynamic::concrete::BlackBoxEval::Outputs(outputs) => {
                 for (index, expected) in outputs {
                     match values.get(&index) {
                         Some(actual) if *actual == expected => {}
@@ -322,13 +324,13 @@ fn check_black_box(black_box: &BlackBoxFuncCall<FieldElement>, values: &WitnessV
                 }
                 Check::Satisfied
             }
-            crate::concrete::BlackBoxEval::Missing => {
+            crate::dynamic::concrete::BlackBoxEval::Missing => {
                 Check::Unsupported(format!("black box {} input is unassigned", other.name()))
             }
-            crate::concrete::BlackBoxEval::Failed(reason) => {
+            crate::dynamic::concrete::BlackBoxEval::Failed(reason) => {
                 Check::Violated(format!("black box {} fails: {reason}", other.name()))
             }
-            crate::concrete::BlackBoxEval::Unverifiable => Check::Unsupported(format!(
+            crate::dynamic::concrete::BlackBoxEval::Unverifiable => Check::Unsupported(format!(
                 "black box {} cannot be checked from witness values",
                 other.name()
             )),
@@ -363,13 +365,6 @@ fn check_bitwise(
     }
 }
 
-fn resolve(input: &FunctionInput<FieldElement>, values: &WitnessValues) -> Option<FieldElement> {
-    match input {
-        FunctionInput::Constant(value) => Some(*value),
-        FunctionInput::Witness(witness) => values.get(&witness.witness_index()).copied(),
-    }
-}
-
 pub(crate) fn evaluate(
     expression: &Expression<FieldElement>,
     values: &WitnessValues,
@@ -385,14 +380,6 @@ pub(crate) fn evaluate(
         total += *coefficient * *value;
     }
     Some(total)
-}
-
-fn to_biguint(value: FieldElement) -> BigUint {
-    BigUint::from_bytes_be(&value.to_be_bytes())
-}
-
-fn to_usize(value: FieldElement) -> Option<usize> {
-    usize::try_from(to_biguint(value)).ok()
 }
 
 #[cfg(test)]
@@ -551,8 +538,8 @@ mod tests {
         let component = (1..=33).collect::<BTreeSet<usize>>();
 
         let mut honest = values(&[(0, 7)]);
-        let crate::concrete::BlackBoxEval::Outputs(digest) =
-            crate::concrete::eval_black_box(&call, &honest)
+        let crate::dynamic::concrete::BlackBoxEval::Outputs(digest) =
+            crate::dynamic::concrete::eval_black_box(&call, &honest)
         else {
             panic!("blake2s should evaluate");
         };

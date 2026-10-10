@@ -29,7 +29,7 @@ use acvm::{
 };
 use bn254_blackbox_solver::Bn254BlackBoxSolver;
 
-use crate::certify::WitnessValues;
+use crate::dynamic::certify::WitnessValues;
 
 /// What evaluating one black box against a partial assignment gave.
 pub(crate) enum BlackBoxEval {
