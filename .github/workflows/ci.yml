@@ -53,6 +53,10 @@ jobs:
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test --release
 
+      # `cargo test` builds the test harnesses, not the binary itself; the
+      # corpus step needs the binary.
+      - run: cargo build --release
+
       - name: Corpus regression
         run: bash corpus/check_corpus.sh
         env:
