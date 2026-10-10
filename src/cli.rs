@@ -19,6 +19,8 @@ pub(crate) struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum Command {
+    /// Prove targets uniquely determined, or find two witnesses that differ
+    /// (SMT self-composition after propagation and local refinement).
     Scan(ScanArgs),
     /// Search for a second accepting witness by mutating hint outputs.
     Mutate(MutateArgs),
