@@ -29,7 +29,7 @@ Result interpretation:
 - `UNKNOWN` → `unknown` — solver timed out or could not decide.
 - `unsupported`          — a non-translated opcode can influence the target.
 
-> Note: most prose docs (`README.md`, `ARCHITECTURE.md`, `examples/README.md`)
+> Note: most prose docs (`README.md`, `docs/ARCHITECTURE.md`, `docs/SOUNDNESS.md`, `examples/README.md`)
 > are written in **Russian**. The `corpus/*.md` docs are in English. Keep this
 > bilingual convention when editing existing files; new top-level docs aimed at
 > tooling/CI can be English.
@@ -85,14 +85,21 @@ second accepting witness, no witness file needed); also `mutate`, `unpinned`,
 | File | Responsibility |
 | --- | --- |
 | `main.rs` | Thin entry point; calls `lib::run()`. |
-| `lib.rs` | CLI parsing (clap), `scan` driver, CLI-enum ↔ internal-enum conversions, report assembly. |
+| `lib.rs` | Module tree and `run()` dispatch only. |
+| `cli.rs` | clap argument types and CLI-enum ↔ internal-enum conversions. |
+| `commands/` | One module per subcommand: `scan` (also the hidden `scan-target` / `refine-circuit` re-invocations used for hard timeouts), `fuzz`, `mutate`, `unpinned`, `witness` (`feasible`, `witness-inputs`, `check-witness`). Only entry points are `pub(crate)`. |
 | `artifact.rs` | Load/deserialize Noir artifact JSON. Handles both `ProgramArtifact` (single program) and `ContractArtifact` (multiple functions → one `LoadedProgram` each). |
+| `debug_info.rs` | ABI and debug-symbol parsing; witness → name / source location. |
 | `targets.rs` | Discover target witnesses: return values and `BrilligCall` outputs (`Simple`/`Array`), tagged with `TargetOrigin`. |
-| `translate.rs` + `translate/` | **Core.** ACIR→Picus IR translation. The root module owns `AcirPicusModel`, the `build_model` per-opcode driver, layered cone slicing (`target_constraints_at`) and unsupported-opcode tracking. Per-opcode emission lives in submodules: `expr` (AssertZero), `range`, `bitwise` (AND/XOR), `memory`, `determinism` (Tier-2 abstraction + the functional-blackbox allow-list), `uniqueness` (uniqueness-propagation lemmas), `known` (constant propagation), `ir` (wire mapping / `var_name` / coefficient helpers), `wires` (wire enumeration). Tests: `translate/tests.rs` (IR shape), `translate/uniqueness.rs` (lemma tests) and `translate/soundness_tests.rs` (differential, solution sets). |
-| `concrete.rs` | Concrete execution through the ACVM (Bn254 solver): black-box evaluation for `certify`/`mutate`, in-process execution with input repair (linear params + learned input links), execution with one Brillig output overridden. |
-| `fuzz.rs` | `fuzz` subcommand: input generation (circuit constants, ABI array runs, feedback-directed window planting), link learning, hint-override search, certified findings. |
+| `translate.rs` + `translate/` | **Static path core.** ACIR→Picus IR translation. The root module owns `AcirPicusModel`, the `build_model` per-opcode driver, layered cone slicing (`target_constraints_at`) and unsupported-opcode tracking. Per-opcode emission lives in submodules: `expr` (AssertZero), `range`, `bitwise` (AND/XOR), `memory`, `determinism` (Tier-2 abstraction + the functional-blackbox allow-list), `uniqueness` (uniqueness-propagation lemmas), `known` (constant propagation), `ir` (wire mapping / `var_name` / coefficient helpers), `wires` (wire enumeration). Tests: `translate/tests.rs` (IR shape), `translate/uniqueness.rs` (lemma tests) and `translate/soundness_tests.rs` (differential, solution sets). |
+| `refine.rs` | Decide/propagate loop: small local windows whose `UNSAT` proves a wire unique and feeds propagation (the QED²/DPVL idea, on ACIR). |
 | `solver.rs` | Build the `UniquenessQuery`, short-circuit trivially-verified targets, run the Picus backend, optional SMT dump, map `SolverResult`→`TargetReport`. |
 | `report.rs` | Serializable report types (`ScanReport` → `ProgramReport` → `CircuitReport` → `TargetReport`), `TargetStatus` enum, human + JSON printers. |
+| `field.rs` | `FieldElement` ↔ `BigUint` / decimal conversions and black-box input resolution, shared by the dynamic path. Use these instead of re-deriving them. |
+| `dynamic/` | **Dynamic path.** `concrete` (ACVM execution: black-box evaluation, input repair, Brillig-output override), `certify` (re-check a finding against ACIR opcodes), `candidates` (values to try, circuit structure), `repair` (forward re-derivation of a witness), `mutate` (mutation search), `fuzz` (input generation + hint-override search), `explain` (`unpinned` analysis and finding explanations). |
+
+Docs: `docs/ARCHITECTURE.md` (pipelines and module map), `docs/SOUNDNESS.md`
+(what each verdict means), `docs/research/` (research log, report, notes).
 
 ## Key conventions and invariants
 
@@ -138,7 +145,7 @@ Tier 1); otherwise each output gets a cross-copy constraint
 `out_x = out_y ∨ (some input differs)` (`determinism_constraint`, Tier 2). This
 keeps `verified` sound but a resulting `unsafe` may be spurious, so affected
 targets are flagged (`abstracted_reasons` / `abstraction_notes`). See
-`SOUNDNESS.md`. Only `Opcode::Call` and unsupported memory patterns still record
+`docs/SOUNDNESS.md`. Only `Opcode::Call` and unsupported memory patterns still record
 an `UnsupportedIssue` and may block affected targets.
 
 ## Examples (`examples/`)
@@ -191,10 +198,8 @@ sets stay in sync — keep TSVs aligned when adding cases.
   `src/translate/tests.rs` (and `soundness_tests.rs` for solution-set changes)
   and, if behavior is observable end-to-end, verify against
   the relevant `examples/` or `corpus/` expectations.
-- There is currently **no CI workflow** (`.github/` is absent). `cargo build`,
-  `cargo test`, `cargo fmt`, `cargo clippy`, and the corpus scripts are the local
-  gates.
+- CI (`.github/workflows/ci.yml`) runs `cargo fmt --check`,
+  `cargo clippy --all-targets -- -D warnings`, `cargo test --release` and the
+  micro corpus. Keep all four green locally before pushing.
 - Keep new artifacts **sanitized** (`noir_version` + `bytecode` only) to match
   the existing committed JSON.
-</content>
-</invoke>

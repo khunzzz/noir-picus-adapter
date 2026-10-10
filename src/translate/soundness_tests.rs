@@ -8,7 +8,7 @@
 //! small domain.
 //!
 //! This is the empirical backstop for the soundness claim documented in
-//! `SOUNDNESS.md`: a `verified` verdict is only trustworthy if the
+//! `docs/SOUNDNESS.md`: a `verified` verdict is only trustworthy if the
 //! translation of each supported opcode neither *adds* nor *drops*
 //! solutions. A bug that drops solutions can turn an under-constrained
 //! (`unsafe`) witness into a false `verified` (a missed vulnerability);
@@ -374,7 +374,7 @@ fn memory_read_solution_set_matches_acir_and_forces_index_in_bounds() {
         );
     }
 
-    // Soundness boundary (see SOUNDNESS.md): the one-hot selector encoding
+    // Soundness boundary (see docs/SOUNDNESS.md): the one-hot selector encoding
     // forces the index in-bounds. No boolean selector assignment can model
     // an out-of-bounds index, so we document that exhaustively.
     let mut out_of_bounds_satisfiable = false;

@@ -6,3 +6,6 @@ examples/smt/
 # Python runtime caches
 __pycache__/
 *.py[cod]
+
+# CI downloads
+.nargo-bin/

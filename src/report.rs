@@ -3,8 +3,8 @@ use std::collections::BTreeMap;
 use color_eyre::eyre::Result;
 use serde::{Deserialize, Serialize};
 
-use crate::certify::Certificate;
 use crate::debug_info::SourceLocation;
+use crate::dynamic::certify::Certificate;
 use crate::targets::{Target, TargetOrigin};
 
 /// Bumped whenever the JSON shape changes incompatibly, so downstream

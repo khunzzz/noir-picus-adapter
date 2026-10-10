@@ -159,7 +159,7 @@ average scan time 183.6 ms, max scan time 746 ms.
 > drops feasibility constraints such as `inverse * d = 1`, the proof that a
 > divisor is non-zero, and every Field division compiles to that shape. It
 > reported the repository's own `examples/verified_division_hint` as `unsafe`.
-> See SOUNDNESS.md, "Срез конуса влияния".
+> See docs/SOUNDNESS.md, "Срез конуса влияния".
 >
 > Slicing now cuts only at provably-constant wires, and the aggressive cut
 > survives as the *first* level of an abstraction-refinement loop, where it is

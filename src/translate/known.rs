@@ -10,8 +10,7 @@
 use std::collections::BTreeMap;
 
 use acir::{
-    AcirField,
-    FieldElement,
+    AcirField, FieldElement,
     circuit::{
         Circuit, Opcode,
         opcodes::{BlackBoxFuncCall, FunctionInput},
@@ -113,8 +112,12 @@ pub(super) fn constraint_coverage(
                 }
             }
             Opcode::BlackBoxFuncCall(
-                BlackBoxFuncCall::AND { lhs, rhs, output, .. }
-                | BlackBoxFuncCall::XOR { lhs, rhs, output, .. },
+                BlackBoxFuncCall::AND {
+                    lhs, rhs, output, ..
+                }
+                | BlackBoxFuncCall::XOR {
+                    lhs, rhs, output, ..
+                },
             ) => {
                 total += 1;
                 if bitwise_operand(lhs, constants).is_some()
@@ -169,10 +172,23 @@ pub(super) fn first_violated_constraint(
             // on exactly that and drops the explicit `RANGE` opcodes, so a
             // checker that skips these two sees a `u8` with no bound anywhere.
             Opcode::BlackBoxFuncCall(
-                BlackBoxFuncCall::AND { lhs, rhs, num_bits, output }
-                | BlackBoxFuncCall::XOR { lhs, rhs, num_bits, output },
+                BlackBoxFuncCall::AND {
+                    lhs,
+                    rhs,
+                    num_bits,
+                    output,
+                }
+                | BlackBoxFuncCall::XOR {
+                    lhs,
+                    rhs,
+                    num_bits,
+                    output,
+                },
             ) => {
-                let exclusive = matches!(opcode, Opcode::BlackBoxFuncCall(BlackBoxFuncCall::XOR { .. }));
+                let exclusive = matches!(
+                    opcode,
+                    Opcode::BlackBoxFuncCall(BlackBoxFuncCall::XOR { .. })
+                );
                 let (Some(left), Some(right), Some(actual)) = (
                     bitwise_operand(lhs, constants),
                     bitwise_operand(rhs, constants),
@@ -188,7 +204,11 @@ pub(super) fn first_violated_constraint(
                         ));
                     }
                 }
-                let expected = if exclusive { &left ^ &right } else { &left & &right };
+                let expected = if exclusive {
+                    &left ^ &right
+                } else {
+                    &left & &right
+                };
                 if actual != expected {
                     return Some(format!(
                         "opcode {index}: {name} output {actual} does not match {expected}"
