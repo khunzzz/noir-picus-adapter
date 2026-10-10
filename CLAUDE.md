@@ -62,7 +62,9 @@ cargo run -- scan examples/artifacts/unsafe_division_hint \
 
 ## CLI surface
 
-One subcommand: `scan` (defined in `src/lib.rs`).
+Main subcommands: `scan` (SMT uniqueness) and `fuzz` (dynamic search for a
+second accepting witness, no witness file needed); also `mutate`, `unpinned`,
+`feasible`, `witness-inputs`, `check-witness` (all in `src/lib.rs`).
 
 | Flag | Values | Default | Meaning |
 | --- | --- | --- | --- |
@@ -87,6 +89,8 @@ One subcommand: `scan` (defined in `src/lib.rs`).
 | `artifact.rs` | Load/deserialize Noir artifact JSON. Handles both `ProgramArtifact` (single program) and `ContractArtifact` (multiple functions → one `LoadedProgram` each). |
 | `targets.rs` | Discover target witnesses: return values and `BrilligCall` outputs (`Simple`/`Array`), tagged with `TargetOrigin`. |
 | `translate.rs` + `translate/` | **Core.** ACIR→Picus IR translation. The root module owns `AcirPicusModel`, the `build_model` per-opcode driver, layered cone slicing (`target_constraints_at`) and unsupported-opcode tracking. Per-opcode emission lives in submodules: `expr` (AssertZero), `range`, `bitwise` (AND/XOR), `memory`, `determinism` (Tier-2 abstraction + the functional-blackbox allow-list), `uniqueness` (uniqueness-propagation lemmas), `known` (constant propagation), `ir` (wire mapping / `var_name` / coefficient helpers), `wires` (wire enumeration). Tests: `translate/tests.rs` (IR shape), `translate/uniqueness.rs` (lemma tests) and `translate/soundness_tests.rs` (differential, solution sets). |
+| `concrete.rs` | Concrete execution through the ACVM (Bn254 solver): black-box evaluation for `certify`/`mutate`, in-process execution with input repair (linear params + learned input links), execution with one Brillig output overridden. |
+| `fuzz.rs` | `fuzz` subcommand: input generation (circuit constants, ABI array runs, feedback-directed window planting), link learning, hint-override search, certified findings. |
 | `solver.rs` | Build the `UniquenessQuery`, short-circuit trivially-verified targets, run the Picus backend, optional SMT dump, map `SolverResult`→`TargetReport`. |
 | `report.rs` | Serializable report types (`ScanReport` → `ProgramReport` → `CircuitReport` → `TargetReport`), `TargetStatus` enum, human + JSON printers. |
 

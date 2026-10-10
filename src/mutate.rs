@@ -183,12 +183,48 @@ pub(crate) struct MutationReport {
     pub(crate) accepted_inputs: Vec<AcceptedInputs>,
 }
 
+/// Knobs for one search.
+#[derive(Clone, Debug)]
+pub(crate) struct SearchOptions {
+    pub(crate) attempts_per_witness: usize,
+    /// Mutate only Brillig outputs, not every witness. The fuzzer runs the
+    /// search once per generated input, and on a circuit with thousands of
+    /// witnesses the full surface costs minutes per run.
+    pub(crate) hints_only: bool,
+    /// Skip the input-moving oracle, whose results need the program to judge.
+    pub(crate) skip_input_oracle: bool,
+    pub(crate) deadline: Option<std::time::Instant>,
+}
+
 /// Try to build a second accepting witness by perturbing hint outputs.
 pub(crate) fn search(
     circuit: &Circuit<FieldElement>,
     honest: &WitnessValues,
     attempts_per_witness: usize,
 ) -> MutationReport {
+    search_with(
+        circuit,
+        honest,
+        &SearchOptions {
+            attempts_per_witness,
+            hints_only: false,
+            skip_input_oracle: false,
+            deadline: None,
+        },
+    )
+}
+
+pub(crate) fn search_with(
+    circuit: &Circuit<FieldElement>,
+    honest: &WitnessValues,
+    options: &SearchOptions,
+) -> MutationReport {
+    let attempts_per_witness = options.attempts_per_witness;
+    let out_of_time = || {
+        options
+            .deadline
+            .is_some_and(|deadline| std::time::Instant::now() >= deadline)
+    };
     let mut report = MutationReport::default();
     let returns = public_outputs(circuit);
     let inputs = circuit
@@ -244,7 +280,10 @@ pub(crate) fn search(
     // caller checks by running it, so every accepting assignment is reported
     // for that comparison rather than judged here.
     let widths = range_widths(circuit);
-    for &input in &inputs {
+    for &input in inputs.iter().filter(|_| !options.skip_input_oracle) {
+        if out_of_time() {
+            break;
+        }
         let Some(original) = honest.get(&input).copied() else {
             continue;
         };
@@ -283,7 +322,15 @@ pub(crate) fn search(
     // Mutating a witness that *is* pinned costs one rejected forward solve, so
     // the extra candidates are cheap; mutating one that is not is exactly the
     // finding being looked for.
-    for hint in attack_surface(circuit, honest, &inputs) {
+    let indexed = index_candidates(circuit);
+    let surface = attack_surface(circuit, honest, &inputs);
+    for hint in surface
+        .into_iter()
+        .filter(|witness| !options.hints_only || hints.contains(witness))
+    {
+        if out_of_time() {
+            break;
+        }
         let Some(original) = honest.get(&hint).copied() else {
             continue;
         };
@@ -297,6 +344,26 @@ pub(crate) fn search(
                 .flatten()
                 .map(|step| original + *step),
         );
+        // A hint that picks a position — the offset of a match, the index of
+        // a list element — is wrong in the interesting way only at another
+        // *valid* position, which is never a neighbour of the honest one.
+        // Those positions are read off the memory blocks the hint indexes.
+        if hints.contains(&hint) {
+            values.extend((2u128..=8).map(FieldElement::from));
+            // Only for a hint that holds a position now; see `index_candidates`.
+            if let Some(slots) = indexed.get(&hint) {
+                if widths
+                    .get(&hint)
+                    .is_some_and(|bits| (2..=64).contains(bits))
+                    && original.num_bits() <= 32
+                    && (original.to_u128() as usize) < slots.len()
+                {
+                    values.extend(slots.iter().copied());
+                }
+            }
+        }
+        let mut seen = BTreeSet::new();
+        values.retain(|value| *value != original && seen.insert(value.to_be_bytes()));
         for alternative in values {
             report.attempted += 1;
             let outcome = repair(circuit, honest, &inputs, &hints, hint, alternative);
@@ -334,6 +401,134 @@ pub(crate) fn search(
     report
 }
 
+/// Every value that makes a hint land on a valid position of a memory block it
+/// indexes.
+///
+/// ACIR reads `block[idx]` with `idx` a witness; when the source wrote
+/// `haystack[i + offset]`, `idx` is defined by `idx - offset - i = 0`. For such
+/// a pair the hint can only matter at `k - i` for `k` in the block, so those
+/// are exactly the values worth trying. Capped, so a huge block does not turn
+/// one hint into thousands of repair passes.
+pub(crate) fn index_candidates(
+    circuit: &Circuit<FieldElement>,
+) -> BTreeMap<u32, Vec<FieldElement>> {
+    const CAP: usize = 1024;
+    let mut block_len = std::collections::HashMap::new();
+    let mut index_len: BTreeMap<u32, usize> = BTreeMap::new();
+    for opcode in &circuit.opcodes {
+        match opcode {
+            Opcode::MemoryInit { block_id, init, .. } => {
+                block_len.insert(*block_id, init.len());
+            }
+            Opcode::MemoryOp { block_id, op } => {
+                if let Some(len) = block_len.get(block_id) {
+                    let entry = index_len.entry(op.index.witness_index()).or_insert(0);
+                    *entry = (*entry).max(*len);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut found: BTreeMap<u32, BTreeSet<Vec<u8>>> = BTreeMap::new();
+    let mut add = |hint: u32, shift: FieldElement, len: usize| {
+        let entry = found.entry(hint).or_default();
+        for k in 0..len.min(CAP) {
+            if entry.len() >= CAP {
+                break;
+            }
+            entry.insert((FieldElement::from(k as u128) - shift).to_be_bytes());
+        }
+    };
+    for (&index, &len) in &index_len {
+        add(index, FieldElement::zero(), len);
+    }
+    for opcode in &circuit.opcodes {
+        let Opcode::AssertZero(expression) = opcode else {
+            continue;
+        };
+        if !expression.mul_terms.is_empty() || expression.linear_combinations.len() != 2 {
+            continue;
+        }
+        let [(a, x), (b, y)] = [
+            expression.linear_combinations[0],
+            expression.linear_combinations[1],
+        ];
+        // a*x + b*y + q = 0. If x is an index and y = x - c, then y's valid
+        // values are k - c. Same with the roles swapped.
+        for ((ci, idx), (ch, hint)) in [((a, x), (b, y)), ((b, y), (a, x))] {
+            let Some(&len) = index_len.get(&idx.witness_index()) else {
+                continue;
+            };
+            if ci.is_zero() || -(ch / ci) != FieldElement::one() {
+                continue;
+            }
+            // idx = hint + c with c = -q / ci.
+            let c = -(expression.q_c / ci);
+            add(hint.witness_index(), c, len);
+        }
+    }
+    // Indices are rarely the hint itself. A read inside a loop compiles to
+    // `idx = hint * predicate` (or `(hint + i) * predicate`), which the exact
+    // rule above cannot see. Walk the constraints that define each index back
+    // to the hints they mention, a few steps deep, and give every hint found
+    // the whole block as candidates: a wider net, still bounded by the block.
+    let hints = hint_witnesses(circuit).into_iter().collect::<BTreeSet<_>>();
+    let mut mentions: BTreeMap<u32, Vec<usize>> = BTreeMap::new();
+    for (position, opcode) in circuit.opcodes.iter().enumerate() {
+        if let Opcode::AssertZero(expression) = opcode {
+            for witness in witnesses_of(expression) {
+                mentions.entry(witness).or_default().push(position);
+            }
+        }
+    }
+    for (&index, &len) in &index_len {
+        let mut frontier = vec![index];
+        let mut visited = BTreeSet::from([index]);
+        for _depth in 0..3 {
+            let mut next = Vec::new();
+            for witness in frontier {
+                let Some(positions) = mentions.get(&witness) else {
+                    continue;
+                };
+                // A witness in many constraints is a hub (a loop predicate);
+                // following it would connect everything to everything.
+                if positions.len() > 24 {
+                    continue;
+                }
+                for &position in positions {
+                    let Opcode::AssertZero(expression) = &circuit.opcodes[position] else {
+                        continue;
+                    };
+                    for other in witnesses_of(expression) {
+                        if !visited.insert(other) {
+                            continue;
+                        }
+                        if hints.contains(&other) {
+                            add(other, FieldElement::zero(), len);
+                        } else {
+                            next.push(other);
+                        }
+                    }
+                }
+            }
+            frontier = next;
+        }
+    }
+
+    found
+        .into_iter()
+        .map(|(hint, values)| {
+            (
+                hint,
+                values
+                    .into_iter()
+                    .map(|bytes| FieldElement::from_be_bytes_reduce(&bytes))
+                    .collect(),
+            )
+        })
+        .collect()
+}
+
 /// The assignment as canonical residues.
 ///
 /// A field element prints signed, so a value just below the modulus comes out
@@ -359,7 +554,7 @@ fn canonical(assignment: &WitnessValues) -> BTreeMap<u32, String> {
 /// The step is derived from the coefficients the hint actually appears with,
 /// so no guessing is involved: for a hint multiplied by `c`, moving it by
 /// `p / c` shifts the term by very nearly the modulus.
-fn wrap_candidates(circuit: &Circuit<FieldElement>) -> BTreeMap<u32, Vec<FieldElement>> {
+pub(crate) fn wrap_candidates(circuit: &Circuit<FieldElement>) -> BTreeMap<u32, Vec<FieldElement>> {
     let modulus = biguint_modulus();
     let mut steps: BTreeMap<u32, BTreeSet<Vec<u8>>> = BTreeMap::new();
 
@@ -418,7 +613,7 @@ fn biguint_modulus() -> BigUint {
 /// hint that is pinned by a range check or a boolean constraint only breaks at
 /// the edges, which is what `0`, `1` and `-1` are for. Trying a wide spread
 /// first would waste attempts on values that any range check rejects outright.
-fn candidate_values(original: FieldElement, attempts: usize) -> Vec<FieldElement> {
+pub(crate) fn candidate_values(original: FieldElement, attempts: usize) -> Vec<FieldElement> {
     let one = FieldElement::one();
     let mut values = vec![
         original + one,
@@ -466,7 +661,7 @@ fn input_candidates(
 
 /// The tightest `RANGE` width each witness carries, which is how wide the type
 /// behind it is.
-fn range_widths(circuit: &Circuit<FieldElement>) -> BTreeMap<u32, u32> {
+pub(crate) fn range_widths(circuit: &Circuit<FieldElement>) -> BTreeMap<u32, u32> {
     let mut widths = BTreeMap::new();
     for opcode in &circuit.opcodes {
         if let Opcode::BlackBoxFuncCall(BlackBoxFuncCall::RANGE {
@@ -491,7 +686,7 @@ fn range_widths(circuit: &Circuit<FieldElement>) -> BTreeMap<u32, u32> {
 /// there would compare nothing and call every divergence internal. Noir's own
 /// AST fuzzer emits that form for roughly one program in eight, which is a
 /// large blind spot to leave open.
-fn public_outputs(circuit: &Circuit<FieldElement>) -> BTreeSet<u32> {
+pub(crate) fn public_outputs(circuit: &Circuit<FieldElement>) -> BTreeSet<u32> {
     let mut outputs = circuit
         .return_values
         .0
@@ -853,8 +1048,12 @@ fn repair_with(
         solved: true,
         refuted: accepted.is_none() && !unjudged,
         unjudged,
-        unjudged_reason: unjudged
-            .then(|| certificate.detail.clone().unwrap_or_else(|| "unstated".to_owned())),
+        unjudged_reason: unjudged.then(|| {
+            certificate
+                .detail
+                .clone()
+                .unwrap_or_else(|| "unstated".to_owned())
+        }),
         accepted,
     }
 }
@@ -1087,26 +1286,54 @@ fn derive_black_box(
             a ^ b
         }),
         other => {
+            // Fast path: inputs unchanged from the honest run, so the honest
+            // outputs are the answer and no evaluation is needed.
             let mut all_present = true;
+            let mut unchanged = true;
             for witness in other.get_input_witnesses() {
                 let index = witness.witness_index();
                 match (assignment.get(&index), honest.get(&index)) {
                     (Some(now), Some(before)) if now == before => {}
-                    (Some(_), _) => return BlackBoxOutcome::Rejected,
+                    (Some(_), _) => unchanged = false,
                     (None, _) => all_present = false,
                 }
             }
             if !all_present {
                 return BlackBoxOutcome::Deferred;
             }
-            for witness in other.get_outputs_vec() {
-                let index = witness.witness_index();
-                match honest.get(&index) {
-                    Some(known) => {
-                        assignment.insert(index, *known);
+            let outputs: Vec<(u32, FieldElement)> = if unchanged
+                && other
+                    .get_outputs_vec()
+                    .iter()
+                    .all(|witness| honest.contains_key(&witness.witness_index()))
+            {
+                other
+                    .get_outputs_vec()
+                    .iter()
+                    .map(|witness| (witness.witness_index(), honest[&witness.witness_index()]))
+                    .collect()
+            } else {
+                // A moved input: run the black box for real. Rejecting here,
+                // as this used to, made every value that flows into a hash
+                // unreachable — on a circuit that ends in a commitment, that is
+                // every return value.
+                match crate::concrete::eval_black_box(other, assignment) {
+                    crate::concrete::BlackBoxEval::Outputs(outputs) => outputs,
+                    crate::concrete::BlackBoxEval::Missing => return BlackBoxOutcome::Deferred,
+                    crate::concrete::BlackBoxEval::Failed(_)
+                    | crate::concrete::BlackBoxEval::Unverifiable => {
+                        return BlackBoxOutcome::Rejected;
+                    }
+                }
+            };
+            for (index, value) in outputs {
+                match assignment.get(&index) {
+                    Some(existing) if *existing != value => return BlackBoxOutcome::Rejected,
+                    Some(_) => {}
+                    None => {
+                        assignment.insert(index, value);
                         *derived += 1;
                     }
-                    None => return BlackBoxOutcome::Deferred,
                 }
             }
             BlackBoxOutcome::Done
@@ -1291,6 +1518,36 @@ mod tests {
     /// inverse hint must be left open rather than pinned to its honest value,
     /// and the two `IsZero` equations have to be solved across two walks. This
     /// test fails if any of them regresses.
+    // A read inside a loop is `idx = hint * predicate`, not `idx = hint + c`.
+    // The hint must still get every slot of the block as a candidate: that is
+    // how the second match of a non-strict substring search is reached.
+    #[test]
+    fn index_candidates_follow_a_predicated_index() {
+        let mut define = Expression::default();
+        define.push_multiplication_term(FieldElement::one(), Witness(1), Witness(2));
+        define.push_addition_term(-FieldElement::one(), Witness(3));
+        let circuit = Circuit {
+            opcodes: vec![
+                hint(&[1]),
+                Opcode::MemoryInit {
+                    block_id: acir::circuit::opcodes::BlockId::new(0),
+                    init: (10..15).map(Witness).collect(),
+                    block_type: BlockType::Memory,
+                },
+                Opcode::AssertZero(define),
+                Opcode::MemoryOp {
+                    block_id: acir::circuit::opcodes::BlockId::new(0),
+                    op: acir::circuit::opcodes::MemOp::read_at_mem_index(Witness(3), Witness(4)),
+                },
+            ],
+            ..Circuit::<FieldElement>::default()
+        };
+        let found = index_candidates(&circuit);
+        let slots = found.get(&1).expect("hint 1 reaches the index");
+        assert_eq!(slots.len(), 5);
+        assert!(slots.contains(&FieldElement::from(4u128)));
+    }
+
     #[test]
     fn finds_the_field_to_u128_cast_forgery() {
         let two_128 = field("340282366920938463463374607431768211456");
@@ -1456,7 +1713,7 @@ mod tests {
             (1, FieldElement::from(1u128)),   // idx_hint = 1
             (2, FieldElement::from(99u128)),  // value hint
             (3, FieldElement::from(10u128)),  // output = block[0] = 10
-            (5, FieldElement::zero()),         // read index = 0
+            (5, FieldElement::zero()),        // read index = 0
             (10, FieldElement::from(10u128)), // block init
             (11, FieldElement::from(20u128)),
             (12, FieldElement::from(30u128)),
@@ -1474,7 +1731,10 @@ mod tests {
             .find(|f| f.diverging_returns.contains_key(&3))
             .expect("conditional array write with hint index should be reachable");
 
-        assert_eq!(finding.witness, 1, "the mutated witness should be the idx hint");
+        assert_eq!(
+            finding.witness, 1,
+            "the mutated witness should be the idx hint"
+        );
         assert_eq!(
             finding.diverging_returns.get(&3).map(String::as_str),
             Some("99"),

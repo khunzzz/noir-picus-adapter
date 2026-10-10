@@ -22,8 +22,10 @@
 //! witnesses are disjoint from the component's, so any assignment of them that
 //! works for an honest run still works here; they cannot affect the divergence.
 //!
-//! Black boxes whose semantics this module does not implement (hashes, curve
-//! operations, signature checks) make the certificate `Incomplete` rather than
+//! Black boxes (hashes, curve operations, signature checks) are evaluated
+//! through the ACVM's own solver (`concrete.rs`). Only recursive verification,
+//! which the ACVM itself does not check, and unassigned inputs make the
+//! certificate `Incomplete` rather than
 //! failed: the divergence may well be real, but this module did not prove it.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -299,7 +301,38 @@ fn check_black_box(black_box: &BlackBoxFuncCall<FieldElement>, values: &WitnessV
             num_bits,
             output,
         } => check_bitwise(lhs, rhs, *num_bits, *output, values, |a, b| a ^ b, "XOR"),
-        other => Check::Unsupported(format!("black box {}", other.name())),
+        other => match crate::concrete::eval_black_box(other, values) {
+            crate::concrete::BlackBoxEval::Outputs(outputs) => {
+                for (index, expected) in outputs {
+                    match values.get(&index) {
+                        Some(actual) if *actual == expected => {}
+                        Some(actual) => {
+                            return Check::Violated(format!(
+                                "{} output w{index} is {actual}, the function gives {expected}",
+                                other.name()
+                            ));
+                        }
+                        None => {
+                            return Check::Unsupported(format!(
+                                "{} output w{index} is unassigned",
+                                other.name()
+                            ));
+                        }
+                    }
+                }
+                Check::Satisfied
+            }
+            crate::concrete::BlackBoxEval::Missing => {
+                Check::Unsupported(format!("black box {} input is unassigned", other.name()))
+            }
+            crate::concrete::BlackBoxEval::Failed(reason) => {
+                Check::Violated(format!("black box {} fails: {reason}", other.name()))
+            }
+            crate::concrete::BlackBoxEval::Unverifiable => Check::Unsupported(format!(
+                "black box {} cannot be checked from witness values",
+                other.name()
+            )),
+        },
     }
 }
 
@@ -500,25 +533,74 @@ mod tests {
         assert_eq!(certificate.status, CertificateStatus::Refuted);
     }
 
-    // A black box with no evaluator here leaves the verdict unproven rather
-    // than silently passing.
+    // Black boxes are evaluated through the ACVM, so a certificate on a
+    // circuit with a hash means something: the right digest passes, a wrong
+    // one is rejected. Before, both came back `Incomplete`, which is what made
+    // every circuit ending in a commitment unreachable for the mutation search.
     #[test]
-    fn an_unmodelled_black_box_leaves_the_certificate_incomplete() {
+    fn a_black_box_is_evaluated_concretely() {
+        let outputs: [Witness; 32] = std::array::from_fn(|i| Witness(1 + i as u32));
+        let call = BlackBoxFuncCall::Blake2s {
+            inputs: vec![FunctionInput::Witness(Witness(0))],
+            outputs: Box::new(outputs),
+        };
+        let circuit = Circuit {
+            opcodes: vec![Opcode::BlackBoxFuncCall(call.clone())],
+            ..Circuit::<FieldElement>::default()
+        };
+        let component = (1..=33).collect::<BTreeSet<usize>>();
+
+        let mut honest = values(&[(0, 7)]);
+        let crate::concrete::BlackBoxEval::Outputs(digest) =
+            crate::concrete::eval_black_box(&call, &honest)
+        else {
+            panic!("blake2s should evaluate");
+        };
+        honest.extend(digest);
+        let accepted = certify(
+            &circuit,
+            &component,
+            &BTreeSet::new(),
+            None,
+            &honest,
+            &honest,
+        );
+        assert_eq!(accepted.status, CertificateStatus::Certified);
+
+        let mut forged = honest.clone();
+        let byte = forged[&5];
+        forged.insert(5, byte + FieldElement::one());
+        let rejected = certify(
+            &circuit,
+            &component,
+            &BTreeSet::new(),
+            None,
+            &forged,
+            &forged,
+        );
+        assert_eq!(rejected.status, CertificateStatus::Refuted);
+    }
+
+    // An input that is not assigned still leaves the verdict unproven.
+    #[test]
+    fn a_black_box_with_an_unassigned_input_is_incomplete() {
+        let outputs: [Witness; 32] = std::array::from_fn(|i| Witness(1 + i as u32));
         let circuit = Circuit {
             opcodes: vec![Opcode::BlackBoxFuncCall(BlackBoxFuncCall::Blake2s {
                 inputs: vec![FunctionInput::Witness(Witness(0))],
-                outputs: Box::new([Witness(1); 32]),
+                outputs: Box::new(outputs),
             })],
             ..Circuit::<FieldElement>::default()
         };
-
+        let component = (1..=33).collect::<BTreeSet<usize>>();
+        let assignment = values(&[(1, 2)]);
         let certificate = certify(
             &circuit,
-            &BTreeSet::from([1]),
-            &BTreeSet::from([0]),
-            Some(1),
-            &values(&[(0, 1), (1, 2)]),
-            &values(&[(0, 1), (1, 3)]),
+            &component,
+            &BTreeSet::new(),
+            None,
+            &assignment,
+            &assignment,
         );
         assert_eq!(certificate.status, CertificateStatus::Incomplete);
     }

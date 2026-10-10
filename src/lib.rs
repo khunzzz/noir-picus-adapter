@@ -2,8 +2,10 @@
 
 mod artifact;
 mod certify;
+mod concrete;
 mod debug_info;
 mod explain;
+mod fuzz;
 mod mutate;
 mod refine;
 mod report;
@@ -40,6 +42,15 @@ enum Command {
     Scan(ScanArgs),
     /// Search for a second accepting witness by mutating hint outputs.
     Mutate(MutateArgs),
+
+    /// Generate inputs, execute in-process, and search the hints of every
+    /// honest run for a second accepting witness with a different output.
+    ///
+    /// Needs no witness file: inputs are generated (biased toward the circuit's
+    /// own constants and repeated windows) and parameters pinned by a linear
+    /// check, such as a public commitment, are solved for. Every finding is
+    /// certified against the ACIR opcodes, black boxes included.
+    Fuzz(FuzzArgs),
 
     /// List hint outputs that nothing in the circuit appears able to pin.
     ///
@@ -140,6 +151,45 @@ struct FeasibleArgs {
 
     #[arg(long, value_enum, default_value = "ff")]
     theory: CliTheory,
+}
+
+#[derive(Debug, Args)]
+struct FuzzArgs {
+    /// The compiled artifact.
+    artifact: PathBuf,
+
+    /// How many generated inputs to try.
+    #[arg(long, default_value_t = 300)]
+    rounds: usize,
+
+    /// Wall-clock budget in seconds.
+    #[arg(long, default_value_t = 120)]
+    budget_secs: u64,
+
+    /// Seed for the input generator.
+    #[arg(long, default_value_t = 1)]
+    seed: u64,
+
+    /// Optional JSON object mapping parameter witness index to a decimal
+    /// value. Round 0 runs it as given and later rounds mutate it, which is
+    /// how a structured input (a well-formed eContent) reaches deep checks.
+    #[arg(long)]
+    inputs: Option<PathBuf>,
+
+    /// Alternative values per hint beyond the position-derived ones.
+    #[arg(long, default_value_t = 7)]
+    attempts: usize,
+
+    /// Keep fuzzing after the first finding.
+    #[arg(long)]
+    all: bool,
+
+    /// How many linearly pinned parameters to solve for per run.
+    #[arg(long, default_value_t = 64)]
+    max_input_repairs: usize,
+
+    #[arg(long, value_enum, default_value_t = CliOutputFormat::Human)]
+    format: CliOutputFormat,
 }
 
 #[derive(Debug, Args)]
@@ -341,6 +391,7 @@ pub fn run() -> Result<()> {
         Command::ScanTarget(args) => scan_one_target(args),
         Command::RefineCircuit(args) => refine_one_circuit(args),
         Command::Mutate(args) => mutate(args),
+        Command::Fuzz(args) => fuzz_command(args),
         Command::Unpinned(args) => unpinned(args),
         Command::Feasible(args) => feasible(args),
         Command::WitnessInputs(args) => witness_inputs(args),
@@ -922,7 +973,11 @@ fn unpinned(args: UnpinnedArgs) -> Result<()> {
         }
     }
     println!("{candidates} candidate(s)");
-    if candidates == 0 { Ok(()) } else { std::process::exit(1) }
+    if candidates == 0 {
+        Ok(())
+    } else {
+        std::process::exit(1)
+    }
 }
 
 /// Подобрать из стека свидетель, который действительно удовлетворяет схеме.
@@ -962,6 +1017,115 @@ fn pick_matching_witness(
 }
 
 /// Search for a second accepting witness by mutation and repair.
+fn fuzz_command(args: FuzzArgs) -> Result<()> {
+    let loaded = artifact::load_programs(&args.artifact)?;
+    let program = loaded
+        .programs
+        .first()
+        .ok_or_else(|| eyre!("artifact contains no program"))?;
+    let seed_inputs = match &args.inputs {
+        Some(path) => {
+            let raw = std::fs::read_to_string(path)
+                .wrap_err_with(|| format!("failed to read {}", path.display()))?;
+            let map: std::collections::BTreeMap<String, serde_json::Value> =
+                serde_json::from_str(&raw)?;
+            let mut values = certify::WitnessValues::new();
+            for (key, value) in map {
+                let index: u32 = key.trim_start_matches('w').parse()?;
+                let text = match value {
+                    serde_json::Value::String(text) => text,
+                    other => other.to_string(),
+                };
+                values.insert(index, fuzz::parse_decimal(&text));
+            }
+            Some(values)
+        }
+        None => None,
+    };
+    let report = fuzz::fuzz(
+        &program.program,
+        program.abi.as_ref(),
+        &fuzz::FuzzOptions {
+            rounds: args.rounds,
+            budget: std::time::Duration::from_secs(args.budget_secs),
+            seed: args.seed,
+            seed_inputs,
+            attempts_per_witness: args.attempts,
+            stop_at_first: !args.all,
+            max_input_repairs: args.max_input_repairs,
+        },
+    );
+    match args.format {
+        CliOutputFormat::Json => {
+            serde_json::to_writer_pretty(std::io::stdout(), &report)?;
+            println!();
+        }
+        CliOutputFormat::Human => {
+            println!(
+                "fuzz: {} round(s), {} executed ({} with input repair), {} hint(s) tried, {} attempt(s), {} finding(s), {} ms",
+                report.rounds,
+                report.executed,
+                report.input_repairs,
+                report.hints,
+                report.attempts,
+                report.findings.len(),
+                report.elapsed_ms
+            );
+            if !report.links.is_empty() {
+                println!(
+                    "  learned input links: {}",
+                    report
+                        .links
+                        .iter()
+                        .map(|(first, len)| format!("w{first}..+{len}"))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
+            }
+            let mut failures = report.failures.iter().collect::<Vec<_>>();
+            failures.sort_by(|a, b| b.1.cmp(a.1));
+            for (message, count) in failures.iter().take(5) {
+                println!("  execution failed {count}x: {message}");
+            }
+            for finding in &report.findings {
+                println!(
+                    "  FINDING (round {}): hint w{} {} -> {} [certificate: {}, {} opcode(s) checked]",
+                    finding.round,
+                    finding.hint,
+                    finding.hint_honest,
+                    finding.hint_alternative,
+                    finding.certificate,
+                    finding.checked_opcodes
+                );
+                for (witness, (honest, alternative)) in &finding.returns {
+                    println!("    return w{witness}: {honest} vs {alternative}");
+                }
+                let shown = finding
+                    .inputs
+                    .iter()
+                    .take(24)
+                    .map(|(witness, value)| format!("w{witness}={value}"))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                let more = finding.inputs.len().saturating_sub(24);
+                println!(
+                    "    inputs: {shown}{}",
+                    if more > 0 {
+                        format!(" ... (+{more}, use --format json)")
+                    } else {
+                        String::new()
+                    }
+                );
+            }
+        }
+    }
+    if report.findings.is_empty() {
+        Ok(())
+    } else {
+        std::process::exit(1)
+    }
+}
+
 fn mutate(args: MutateArgs) -> Result<()> {
     let loaded = artifact::load_programs(&args.artifact)?;
     let program = loaded
@@ -1027,7 +1191,10 @@ fn mutate(args: MutateArgs) -> Result<()> {
                         assignment
                             .iter()
                             .filter(|(index, value)| {
-                                honest.get(*index).map(|known| known.to_string().as_str() != value.as_str()).unwrap_or(true)
+                                honest
+                                    .get(*index)
+                                    .map(|known| known.to_string().as_str() != value.as_str())
+                                    .unwrap_or(true)
                             })
                             .map(|(index, _)| *index)
                             .collect::<std::collections::BTreeSet<_>>()
