@@ -98,7 +98,6 @@ printf 'case\tcompile_status\tscan_status\texecute_output\treason\n' > "$SUMMARY
 trap cleanup_targets EXIT
 
 command -v jq >/dev/null 2>&1 || fail "jq is required"
-command -v rg >/dev/null 2>&1 || fail "rg is required"
 command -v cargo >/dev/null 2>&1 || fail "cargo is required"
 command -v timeout >/dev/null 2>&1 || fail "coreutils timeout is required"
 require_executable "$NARGO" "nargo"
@@ -157,7 +156,7 @@ while IFS=$'\t' read -r case artifact expected_compile scan_fixed scan_targets s
   if ! jq -e 'has("noir_version") and has("bytecode") and (keys | length == 2)' "$artifact_path" >/dev/null; then
     fail "$case sanitized artifact has unexpected shape"
   fi
-  if rg -n '/home/said|debug_symbols|file_map|source' "$artifact_path" >/dev/null; then
+  if grep -Eq '/home/said|debug_symbols|file_map|source' "$artifact_path"; then
     fail "$case sanitized artifact contains local paths or debug metadata"
   fi
 

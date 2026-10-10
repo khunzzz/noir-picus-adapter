@@ -123,7 +123,6 @@ printf 'case\tvariant\tstatus\tn_wires\torig_constraints\ttarget_count\telapsed_
 trap cleanup_targets EXIT
 
 command -v jq >/dev/null 2>&1 || fail "jq is required"
-command -v rg >/dev/null 2>&1 || fail "rg is required"
 command -v cargo >/dev/null 2>&1 || fail "cargo is required"
 command -v timeout >/dev/null 2>&1 || fail "coreutils timeout is required"
 require_executable "$NARGO" "nargo"
@@ -190,7 +189,7 @@ while IFS=$'\t' read -r case variant artifact fixed targets expected tier source
     fail "$case/$variant sanitized artifact has unexpected shape"
   fi
 
-  if rg -n '/home/said|debug_symbols|file_map|source' "$artifact_path" >/dev/null; then
+  if grep -Eq '/home/said|debug_symbols|file_map|source' "$artifact_path"; then
     fail "$case/$variant sanitized artifact contains local paths or debug metadata"
   fi
 
