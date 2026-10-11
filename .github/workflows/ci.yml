@@ -9,8 +9,8 @@ env:
   CARGO_TERM_COLOR: always
   CVC5_VERSION: "1.3.1"
   # Must match the Noir revision `acir` is pinned to in Cargo.toml
-  # (40d6574 = v1.0.0-beta.26), or artifacts fail to deserialize.
-  NARGO_VERSION: "v1.0.0-beta.26"
+  # (9cdc608 = v1.0.0-rc.4), or artifacts fail to deserialize.
+  NARGO_VERSION: "v1.0.0-rc.4"
 
 jobs:
   test:
@@ -37,15 +37,32 @@ jobs:
           echo "CVC5_INCLUDE_DIR=$PWD/${archive}/include" >> "$GITHUB_ENV"
 
       # The corpus scripts recompile Noir packages, so they need nargo.
-      - name: Fetch nargo
+      # Noir publishes binaries only for some tags (none for v1.0.0-rc.1 to
+      # rc.4), so fall back to building the tag from source, cached per tag.
+      - name: Cache nargo
+        id: nargo-cache
+        uses: actions/cache@v4
+        with:
+          path: .nargo-bin
+          key: nargo-${{ env.NARGO_VERSION }}-${{ runner.os }}
+
+      - name: Fetch or build nargo
+        if: steps.nargo-cache.outputs.cache-hit != 'true'
         run: |
           set -euo pipefail
-          mkdir -p "$PWD/.nargo-bin"
-          curl -sSfL -o nargo.tar.gz \
-            "https://github.com/noir-lang/noir/releases/download/${NARGO_VERSION}/nargo-x86_64-unknown-linux-gnu.tar.gz"
-          tar -xzf nargo.tar.gz -C "$PWD/.nargo-bin"
-          "$PWD/.nargo-bin/nargo" --version
-          echo "NARGO=$PWD/.nargo-bin/nargo" >> "$GITHUB_ENV"
+          mkdir -p "$PWD/.nargo-bin/bin"
+          url="https://github.com/noir-lang/noir/releases/download/${NARGO_VERSION}/nargo-x86_64-unknown-linux-gnu.tar.gz"
+          if curl -sSfL -o nargo.tar.gz "$url"; then
+            tar -xzf nargo.tar.gz -C "$PWD/.nargo-bin/bin"
+          else
+            cargo install --locked --git https://github.com/noir-lang/noir \
+              --tag "${NARGO_VERSION}" nargo_cli --root "$PWD/.nargo-bin"
+          fi
+
+      - name: Use nargo
+        run: |
+          "$PWD/.nargo-bin/bin/nargo" --version
+          echo "NARGO=$PWD/.nargo-bin/bin/nargo" >> "$GITHUB_ENV"
 
       - uses: Swatinem/rust-cache@v2
 
