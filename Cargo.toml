@@ -44,3 +44,10 @@ package = "bn254_blackbox_solver"
 git = "https://github.com/chyanju/picus.git"
 rev = "7cb6d450a455bde7f447b831d79da343fa4ef084"
 package = "picus-smt"
+
+# The cvc5 build Picus links, used directly for refinement windows, which need
+# solver options the Picus backend does not expose (see src/refine/window.rs).
+[dependencies.cvc5-ff]
+git = "https://github.com/chyanju/picus.git"
+rev = "7cb6d450a455bde7f447b831d79da343fa4ef084"
+package = "cvc5-ff"

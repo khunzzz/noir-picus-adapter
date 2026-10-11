@@ -66,6 +66,13 @@ pub(crate) enum Command {
     /// binary through this to put a hard wall clock around each solver call.
     #[command(hide = true)]
     ScanTarget(ScanTargetArgs),
+
+    /// Decide one refinement window read from stdin.
+    ///
+    /// Not meant to be run by hand: refinement runs every local query through
+    /// this so a runaway solver call can be killed on a hard deadline.
+    #[command(hide = true)]
+    SolveWindow,
 }
 
 #[derive(Debug, Args)]

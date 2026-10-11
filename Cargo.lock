@@ -1134,6 +1134,7 @@ dependencies = [
  "bn254_blackbox_solver",
  "clap",
  "color-eyre",
+ "cvc5-ff",
  "flate2",
  "num-bigint 0.4.6",
  "num-traits",
