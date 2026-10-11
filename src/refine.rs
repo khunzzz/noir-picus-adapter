@@ -20,7 +20,13 @@
 //! propagation.
 
 use acir::native_types::Witness;
-use picus_smt::{backends::SolverResult, create_backend, query::UniquenessQuery};
+use picus_smt::{
+    SolverKind, Theory, backends::SolverResult, create_backend, query::UniquenessQuery,
+};
+
+mod window;
+
+pub(crate) use window::serve_one as solve_window;
 
 use crate::{
     solver::SolverOptions,
@@ -106,6 +112,24 @@ fn is_unique(
     options: &SolverOptions,
     timeout_ms: u64,
 ) -> bool {
+    // The native path: cvc5 on just this window, with the split field engine,
+    // in a child process with a hard deadline.
+    if matches!(
+        (options.solver, options.theory),
+        (SolverKind::Cvc5, Theory::Ff)
+    ) {
+        return window::is_unique_isolated(
+            &window::Window {
+                prime: &field_modulus(),
+                orig: &query.orig,
+                alt: &query.alt,
+                known: &model.fixed_known_signals,
+                target: target_signal(witness),
+            },
+            timeout_ms,
+        );
+    }
+
     let query = UniquenessQuery {
         prime: field_modulus(),
         n_wires: model.n_wires,

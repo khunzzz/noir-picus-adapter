@@ -727,3 +727,109 @@ fn unsupported_opcode_sharing_only_fixed_input_does_not_block_target() {
 
     assert!(model.unsupported_reasons_for_target(Witness(1)).is_empty());
 }
+
+// The indexed local window must be exactly the window the original full
+// rescan produced: same wires, same groups, same order, same pins. The rescan
+// is kept here verbatim as the reference and compared on every witness of
+// every example circuit, at the radii refinement uses and one beyond.
+#[test]
+fn indexed_local_window_matches_the_full_rescan() {
+    use std::collections::BTreeSet;
+
+    fn reference(
+        model: &super::AcirPicusModel,
+        target: Witness,
+        radius: usize,
+    ) -> (Vec<IRConstraint>, Vec<IRConstraint>) {
+        let signal = super::target_signal(target);
+        let mut cut = BTreeSet::new();
+        cut.insert(0);
+        cut.extend(model.constant_signals.keys().copied());
+        cut.extend(model.fixed_known_signals.iter().copied());
+        cut.remove(&signal);
+        let mut window = BTreeSet::from([signal]);
+        for _ in 0..radius {
+            let mut grown = window.clone();
+            for edge in &model.dependency_edges {
+                if !edge.iter().any(|wire| window.contains(wire)) {
+                    continue;
+                }
+                for wire in edge {
+                    if !cut.contains(wire) {
+                        grown.insert(*wire);
+                    }
+                }
+            }
+            if grown == window {
+                break;
+            }
+            window = grown;
+        }
+        let (mut orig, mut alt, mut pinned) = (Vec::new(), Vec::new(), BTreeSet::new());
+        for group in model
+            .constraint_groups
+            .iter()
+            .filter(|group| group.wires.iter().any(|wire| window.contains(wire)))
+            .chain(&model.global_groups)
+        {
+            orig.extend(
+                model.orig_constraints[group.orig_range.clone()]
+                    .iter()
+                    .cloned(),
+            );
+            alt.extend(
+                model.alt_constraints[group.alt_range.clone()]
+                    .iter()
+                    .cloned(),
+            );
+            for wire in &group.wires {
+                if model.constant_signals.contains_key(wire) {
+                    pinned.insert(*wire);
+                }
+            }
+        }
+        for wire in pinned {
+            let value = &model.constant_signals[&wire];
+            orig.push(IRConstraint::VarEq(format!("x{wire}"), value.clone()));
+            if !model.input_indices.contains(&wire) {
+                alt.push(IRConstraint::VarEq(format!("y{wire}"), value.clone()));
+            }
+        }
+        (orig, alt)
+    }
+
+    let examples = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/artifacts");
+    let mut compared = 0;
+    for entry in std::fs::read_dir(examples).unwrap() {
+        let path = entry.unwrap().path();
+        let loaded = crate::artifact::load_programs(&path).unwrap();
+        for program in &loaded.programs {
+            for circuit in &program.program.functions {
+                for fixed_mode in [FixedMode::Public, FixedMode::AllParams] {
+                    let model = build_model(
+                        circuit,
+                        ModelOptions {
+                            fixed_mode,
+                            ..ModelOptions::default()
+                        },
+                    );
+                    for index in 0..(model.witness_wire_limit as u32).saturating_sub(1) {
+                        for radius in [1, 2, 3] {
+                            let indexed = model.local_window(Witness(index), radius);
+                            let (orig, alt) = reference(&model, Witness(index), radius);
+                            assert_eq!(
+                                format!("{:?}", indexed.orig),
+                                format!("{orig:?}"),
+                                "{} w{index} radius {radius}",
+                                path.display()
+                            );
+                            assert_eq!(format!("{:?}", indexed.alt), format!("{alt:?}"));
+                            compared += 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert!(compared > 20, "compared only {compared} windows");
+}

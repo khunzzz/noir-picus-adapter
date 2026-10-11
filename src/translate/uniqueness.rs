@@ -127,7 +127,9 @@ pub(super) fn infer_uniqueness(
         }
         // The conditional-zero lemma relates *pairs* of constraints, so it runs
         // over the whole circuit rather than per opcode.
-        changed |= state.solve_conditional_zero(circuit);
+        if LemmaSet::from_env().condzero {
+            changed |= state.solve_conditional_zero(circuit);
+        }
     }
 
     state
@@ -212,16 +214,69 @@ impl Form {
     }
 }
 
+/// Which lemmas propagation may use, for ablation studies.
+///
+/// `NOIR_PICUS_LEMMAS` takes a comma-separated subset of `single` (one unknown
+/// with an invertible coefficient, including symbolic non-zero ones),
+/// `euclid` (division with remainder), `condzero` (the `IsZero` case split)
+/// and `blackbox` (a black box with determined inputs), or `all` / `none`.
+/// Unset means `all`. Turning a lemma off can only shrink the determined set,
+/// so every setting is as sound as the default; it exists to measure what each
+/// lemma contributes, the way Picus's `--lemmas` does.
+#[derive(Clone, Copy)]
+struct LemmaSet {
+    single: bool,
+    euclid: bool,
+    condzero: bool,
+    blackbox: bool,
+}
+
+impl LemmaSet {
+    fn from_env() -> Self {
+        static CACHE: std::sync::OnceLock<LemmaSet> = std::sync::OnceLock::new();
+        *CACHE.get_or_init(|| {
+            let Ok(spec) = std::env::var("NOIR_PICUS_LEMMAS") else {
+                return Self::ALL;
+            };
+            let spec = spec.trim().to_ascii_lowercase();
+            if spec == "all" || spec.is_empty() {
+                return Self::ALL;
+            }
+            let has = |name: &str| spec.split(',').any(|part| part.trim() == name);
+            Self {
+                single: has("single"),
+                euclid: has("euclid"),
+                condzero: has("condzero"),
+                blackbox: has("blackbox"),
+            }
+        })
+    }
+
+    const ALL: Self = Self {
+        single: true,
+        euclid: true,
+        condzero: true,
+        blackbox: true,
+    };
+}
+
 impl Uniqueness {
     fn apply(&mut self, opcode: &Opcode<FieldElement>) -> bool {
+        let lemmas = LemmaSet::from_env();
         match opcode {
             Opcode::AssertZero(expression) => {
                 let mut changed = self.learn_nonzero(expression);
-                changed |= self.solve_single_unknown(expression);
-                changed |= self.solve_euclidean(expression);
+                if lemmas.single {
+                    changed |= self.solve_single_unknown(expression);
+                }
+                if lemmas.euclid {
+                    changed |= self.solve_euclidean(expression);
+                }
                 changed
             }
-            Opcode::BlackBoxFuncCall(black_box) => self.apply_black_box(black_box),
+            Opcode::BlackBoxFuncCall(black_box) if lemmas.blackbox => {
+                self.apply_black_box(black_box)
+            }
             _ => false,
         }
     }
@@ -310,10 +365,20 @@ impl Uniqueness {
         }
 
         let mut changed = false;
-        for (side, opposite_max) in [(&positive, &negative_max), (&negative, &positive_max)] {
+        for (side, side_constant, opposite_max) in [
+            (&positive, &positive_constant, &negative_max),
+            (&negative, &negative_constant, &positive_max),
+        ] {
+            if opposite_max < side_constant {
+                continue;
+            }
             for (wire, coefficient) in side {
-                // `|c| * w <= opposite side's maximum`, so `w <= max / |c|`.
-                changed |= self.tighten_bound(*wire, opposite_max / coefficient);
+                // Both sides are below `p`, so the equation holds over the
+                // integers, and every other term on this side is non-negative:
+                // `|c| * w + K <= opposite side's maximum`, so
+                // `w <= (max - K) / |c|`. Dropping `K` here used to lose the
+                // bound `R < 86400` that Noir encodes as `R + 44672 < 2^17`.
+                changed |= self.tighten_bound(*wire, (opposite_max - side_constant) / coefficient);
             }
         }
         changed
@@ -516,7 +581,15 @@ impl Uniqueness {
             if !is_unit(remainder_coeff, &modulus) {
                 continue;
             }
-            let Some(shift) = power_of_two_exponent(quotient_coeff, &modulus) else {
+            // Any divisor, not only a power of two. Noir's `x / c` and
+            // `x % c` for a constant `c` compile to this split whatever `c`
+            // is (dates divide by 86400 and 365), and the argument below never
+            // used the shape of `c`: if `R - R' = c(Q' - Q) (mod p)`, both
+            // sides are smaller than `c + c*Qmax <= p` in absolute value, so
+            // the equation holds over the integers, and `|R - R'| < c` forces
+            // `Q = Q'`. The relative sign of the two coefficients does not
+            // matter either, for the same reason.
+            let Some(divisor) = signed_magnitude(quotient_coeff, &modulus) else {
                 continue;
             };
             let (Some(remainder_bound), Some(quotient_bound)) =
@@ -524,7 +597,6 @@ impl Uniqueness {
             else {
                 continue;
             };
-            let divisor = BigUint::one() << shift;
             // `R < c` puts the remainder below the divisor, and
             // `c * Qmax + Rmax < p` rules out wrap-around, so the split is the
             // integer one and therefore unique.
@@ -677,16 +749,11 @@ fn is_unit(value: &BigUint, modulus: &BigUint) -> bool {
 }
 
 /// The exponent `k` when `value` is `+/-2^k`, for `k` below the field width.
-fn power_of_two_exponent(value: &BigUint, modulus: &BigUint) -> Option<u32> {
-    for candidate in [value.clone(), modulus - value] {
-        if candidate.count_ones() == 1 {
-            let exponent = candidate.bits() - 1;
-            if exponent < u64::from(FieldElement::max_num_bits()) {
-                return u32::try_from(exponent).ok();
-            }
-        }
-    }
-    None
+/// `|value|` for a field element read as a signed integer in `(-p/2, p/2]`,
+/// when that is at least 2 (a divisor of 1 or 0 splits nothing).
+fn signed_magnitude(value: &BigUint, modulus: &BigUint) -> Option<BigUint> {
+    let magnitude = std::cmp::min(value.clone(), modulus - value);
+    (magnitude >= BigUint::from(2u32)).then_some(magnitude)
 }
 
 /// Convenience for callers that only need the determined set.
@@ -735,6 +802,73 @@ mod tests {
         let uniqueness = infer_uniqueness(&circuit, &inputs(&circuit));
         assert!(uniqueness.determined.contains(&picus_wire(Witness(7))));
         assert!(uniqueness.determined.contains(&picus_wire(Witness(8))));
+    }
+
+    // Division by a constant that is not a power of two, exactly as Noir
+    // compiles `t / 86400` and `t % 86400` when it parses a date:
+    //   ASSERT w141 = w1 - 86400*w140      (split)
+    //   RANGE  w140, 48                    (quotient width)
+    //   ASSERT w142 = w141 + 44672
+    //   RANGE  w142, 17                    (so w141 < 2^17 - 44672 = 86400)
+    // The remainder is strictly below the divisor and nothing wraps, so both
+    // halves are determined.
+    #[test]
+    fn euclidean_split_with_a_non_power_of_two_divisor() {
+        let mut split = Expression::default();
+        split.push_addition_term(FieldElement::one(), Witness(141));
+        split.push_addition_term(-FieldElement::one(), Witness(1));
+        split.push_addition_term(FieldElement::from(86400u32), Witness(140));
+        let mut slack = Expression::default();
+        slack.push_addition_term(FieldElement::one(), Witness(142));
+        slack.push_addition_term(-FieldElement::one(), Witness(141));
+        slack.q_c = -FieldElement::from(44672u32);
+
+        let circuit = Circuit {
+            public_parameters: PublicInputs([Witness(1)].into_iter().collect()),
+            opcodes: vec![
+                range(140, 48),
+                range(141, 17),
+                Opcode::AssertZero(slack),
+                range(142, 17),
+                Opcode::AssertZero(split),
+            ],
+            ..Circuit::<FieldElement>::default()
+        };
+
+        let uniqueness = infer_uniqueness(&circuit, &inputs(&circuit));
+        assert!(uniqueness.determined.contains(&picus_wire(Witness(140))));
+        assert!(uniqueness.determined.contains(&picus_wire(Witness(141))));
+    }
+
+    // The same split with the remainder allowed to reach the divisor itself
+    // (`R <= 86400` instead of `R < 86400`) has two solutions — `(Q, 86400)`
+    // and `(Q + 1, 0)` — so neither wire may be claimed.
+    #[test]
+    fn euclidean_split_rejects_a_remainder_bound_reaching_the_divisor() {
+        let mut split = Expression::default();
+        split.push_addition_term(FieldElement::one(), Witness(141));
+        split.push_addition_term(-FieldElement::one(), Witness(1));
+        split.push_addition_term(FieldElement::from(86400u32), Witness(140));
+        let mut slack = Expression::default();
+        slack.push_addition_term(FieldElement::one(), Witness(142));
+        slack.push_addition_term(-FieldElement::one(), Witness(141));
+        slack.q_c = -FieldElement::from(44671u32);
+
+        let circuit = Circuit {
+            public_parameters: PublicInputs([Witness(1)].into_iter().collect()),
+            opcodes: vec![
+                range(140, 48),
+                range(141, 17),
+                Opcode::AssertZero(slack),
+                range(142, 17),
+                Opcode::AssertZero(split),
+            ],
+            ..Circuit::<FieldElement>::default()
+        };
+
+        let uniqueness = infer_uniqueness(&circuit, &inputs(&circuit));
+        assert!(!uniqueness.determined.contains(&picus_wire(Witness(140))));
+        assert!(!uniqueness.determined.contains(&picus_wire(Witness(141))));
     }
 
     // Without the range bounds the same equation has a free parameter, so

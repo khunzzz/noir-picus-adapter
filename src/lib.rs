@@ -33,6 +33,7 @@ pub fn run() -> Result<()> {
         Command::Scan(args) => commands::scan::scan(args),
         Command::ScanTarget(args) => commands::scan::scan_one_target(args),
         Command::RefineCircuit(args) => commands::scan::refine_one_circuit(args),
+        Command::SolveWindow => refine::solve_window(),
         Command::Mutate(args) => commands::mutate::mutate(args),
         Command::Fuzz(args) => commands::fuzz::fuzz(args),
         Command::Unpinned(args) => commands::unpinned::unpinned(args),

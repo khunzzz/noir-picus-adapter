@@ -159,6 +159,7 @@ fn describe(error: &OpcodeResolutionError<FieldElement>) -> String {
     use acvm::pwg::ResolvedAssertionPayload;
     let payload = match error {
         OpcodeResolutionError::UnsatisfiedConstrain { payload, .. }
+        | OpcodeResolutionError::IndexOutOfBounds { payload, .. }
         | OpcodeResolutionError::BrilligFunctionFailed { payload, .. } => payload.as_ref(),
         _ => None,
     };
