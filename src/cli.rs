@@ -49,6 +49,10 @@ pub(crate) enum Command {
     /// each; it is appended to, so several artifacts can share one directory.
     Mutants(MutantsArgs),
 
+    /// Label one mutant by example: `nondet`, `over-accept`, `internal` or
+    /// `no-weakening`, with the assignment that shows it (JSON on stdout).
+    LabelMutant(LabelMutantArgs),
+
     /// Ask whether the constraint system accepts a given input assignment.
     Feasible(FeasibleArgs),
 
@@ -103,6 +107,34 @@ pub(crate) struct MutantsArgs {
     /// Most mutants to keep per bug class, spread evenly over the circuit.
     #[arg(long, default_value_t = 40)]
     pub(crate) max_per_class: usize,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct LabelMutantArgs {
+    /// The original (correct) artifact.
+    #[arg(long)]
+    pub(crate) original: PathBuf,
+
+    /// The mutant artifact written by `mutants`.
+    #[arg(long)]
+    pub(crate) mutant: PathBuf,
+
+    /// Index of the mutated opcode in the original `main` (`mutants.tsv`).
+    #[arg(long)]
+    pub(crate) opcode: usize,
+
+    /// Honest inputs of the original: JSON object, witness index to decimal
+    /// value, as `witness-inputs` prints it.
+    #[arg(long)]
+    pub(crate) inputs: PathBuf,
+
+    /// Wall-clock budget in seconds.
+    #[arg(long, default_value_t = 20)]
+    pub(crate) budget_secs: u64,
+
+    /// Alternative values per hint or input.
+    #[arg(long, default_value_t = 7)]
+    pub(crate) attempts: usize,
 }
 
 #[derive(Debug, Args)]

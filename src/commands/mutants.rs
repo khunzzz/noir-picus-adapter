@@ -8,7 +8,7 @@ use color_eyre::eyre::{Context, Result, eyre};
 use serde::Serialize;
 
 use crate::artifact;
-use crate::cli::MutantsArgs;
+use crate::cli::{LabelMutantArgs, MutantsArgs};
 use crate::mutants::{Mutant, mutants as circuit_mutants};
 
 /// Sanitized artifact form, the same as the committed examples.
@@ -79,6 +79,43 @@ pub(crate) fn mutants(args: MutantsArgs) -> Result<()> {
         "{stem}: wrote {written} mutant(s) to {}",
         args.out.display()
     );
+    Ok(())
+}
+
+/// Label one mutant against its original and print the report as JSON.
+pub(crate) fn label_mutant(args: LabelMutantArgs) -> Result<()> {
+    let load = |path: &std::path::Path| -> Result<Program<FieldElement>> {
+        let loaded = artifact::load_programs(path)?;
+        let [program] = loaded.programs.as_slice() else {
+            return Err(eyre!(
+                "expected a single-program artifact: {}",
+                path.display()
+            ));
+        };
+        Ok(program.program.clone())
+    };
+    let original = load(&args.original)?;
+    let mutant = load(&args.mutant)?;
+    if args.opcode >= original.functions[0].opcodes.len() {
+        return Err(eyre!("opcode {} is out of range", args.opcode));
+    }
+    let inputs = crate::commands::fuzz::read_inputs(&args.inputs)?;
+    // ACVM assertions are caught and read as rejections; keep their panic
+    // reports off stderr, where a batch run would drown in them.
+    std::panic::set_hook(Box::new(|_| {}));
+    let report = crate::dynamic::label::label(
+        &original,
+        &mutant,
+        args.opcode,
+        &inputs,
+        &crate::dynamic::label::LabelOptions {
+            budget: std::time::Duration::from_secs(args.budget_secs),
+            attempts: args.attempts,
+        },
+    )
+    .map_err(|reason| eyre!(reason))?;
+    serde_json::to_writer(std::io::stdout(), &report)?;
+    println!();
     Ok(())
 }
 

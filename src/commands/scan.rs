@@ -59,7 +59,15 @@ pub(crate) fn scan(args: ScanArgs) -> Result<()> {
             let mut model =
                 translate::build_model_with_calls(circuit, model_options, &deterministic_calls);
             let mut refinement = refine::RefinementStats::default();
-            if !args.no_solve && !args.no_refine {
+            // Refinement only ever moves witnesses into the determined set, so
+            // when every target is already there (or there are none) it cannot
+            // change a verdict and its whole budget would be spent for nothing.
+            let open_targets = discovered_targets.iter().any(|target| {
+                let signal = translate::target_signal(target.witness);
+                !model.fixed_known_signals.contains(&signal)
+                    && !model.input_indices.contains(&signal)
+            });
+            if !args.no_solve && !args.no_refine && open_targets {
                 for wire in refine_out_of_process(&args, program_index, circuit_index) {
                     model.mark_determined(wire);
                     refinement.proved += 1;
