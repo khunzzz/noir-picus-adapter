@@ -118,7 +118,12 @@ pub(crate) fn witness_inputs(args: WitnessInputsArgs) -> Result<()> {
         .chain(circuit.public_parameters.0.iter())
     {
         if let Some(value) = item.witness.get(witness) {
-            inputs.insert(witness.witness_index().to_string(), value.to_string());
+            // Decimal, as `fuzz --inputs` and `label-mutant` parse it: the
+            // field's own `Display` switches to hex for large values.
+            inputs.insert(
+                witness.witness_index().to_string(),
+                crate::field::to_decimal(*value),
+            );
         }
     }
 

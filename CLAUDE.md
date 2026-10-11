@@ -64,7 +64,7 @@ cargo run -- scan examples/artifacts/unsafe_division_hint \
 
 Main subcommands: `scan` (SMT uniqueness) and `fuzz` (dynamic search for a
 second accepting witness, no witness file needed); also `mutate`, `unpinned`,
-`feasible`, `witness-inputs`, `check-witness`, `mutants` (all in `src/lib.rs`).
+`feasible`, `witness-inputs`, `check-witness`, `mutants`, `label-mutant` (all in `src/lib.rs`).
 
 | Flag | Values | Default | Meaning |
 | --- | --- | --- | --- |
@@ -97,7 +97,7 @@ second accepting witness, no witness file needed); also `mutate`, `unpinned`,
 | `report.rs` | Serializable report types (`ScanReport` → `ProgramReport` → `CircuitReport` → `TargetReport`), `TargetStatus` enum, human + JSON printers. |
 | `mutants.rs` | Circuit mutation operators (`drop-check`, `drop-range`, `widen-range`) for the mutation benchmark; every mutant still executes on the original honest inputs. `mutants` subcommand writes sanitized mutant artifacts + `mutants.tsv`. |
 | `field.rs` | `FieldElement` ↔ `BigUint` / decimal conversions and black-box input resolution, shared by the dynamic path. Use these instead of re-deriving them. |
-| `dynamic/` | **Dynamic path.** `concrete` (ACVM execution: black-box evaluation, input repair, Brillig-output override), `certify` (re-check a finding against ACIR opcodes), `candidates` (values to try, circuit structure), `repair` (forward re-derivation of a witness), `mutate` (mutation search), `fuzz` (input generation + hint-override search), `explain` (`unpinned` analysis and finding explanations). |
+| `dynamic/` | **Dynamic path.** `concrete` (ACVM execution: black-box evaluation, input repair, Brillig-output override), `certify` (re-check a finding against ACIR opcodes), `candidates` (values to try, circuit structure), `repair` (forward re-derivation of a witness), `mutate` (mutation search), `label` (ground-truth labels for circuit mutants: `nondet` / `over-accept` / `internal` / `no-weakening`, each with the witness that shows it), `fuzz` (input generation + hint-override search), `explain` (`unpinned` analysis and finding explanations). |
 
 Docs: `docs/ARCHITECTURE.md` (pipelines and module map), `docs/SOUNDNESS.md`
 (what each verdict means), `docs/research/` (research log, report, notes).
@@ -168,6 +168,7 @@ runner script:
 | Micro regression | `manifest.tsv` | `check_corpus.sh` | all rows `unsafe`; scan `--fixed public --targets returns` |
 | Production-like | `realistic_manifest.tsv` | `check_realistic_corpus.sh` | vulnerable variants `unsafe`, fixed variants `verified`; records per-variant metrics |
 | Compiler bugs | `compiler_regression_manifest.tsv` | `check_compiler_regression.sh` | Noir advisory PoCs; some scanned, some checked via `nargo execute` |
+| Mutation benchmark | `mutants.tsv` (generated) | `mutation_bench.py run/summarize` | labels every mutant by example, then scores `scan` and `fuzz` against the labels; originals with honest inputs come from Noir's `test_programs/execution_success` |
 
 `provenance.tsv` files record the original DSL/project/source per miniport.
 Markdown docs are navigation/analysis only — see `corpus/README.md` "Documentation

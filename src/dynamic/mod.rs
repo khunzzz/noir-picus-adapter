@@ -10,5 +10,6 @@ pub(crate) mod certify;
 pub(crate) mod concrete;
 pub(crate) mod explain;
 pub(crate) mod fuzz;
+pub(crate) mod label;
 pub(crate) mod mutate;
 pub(crate) mod repair;

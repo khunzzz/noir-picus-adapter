@@ -37,6 +37,7 @@ pub fn run() -> Result<()> {
         Command::SolveWindow => refine::solve_window(),
         Command::Mutate(args) => commands::mutate::mutate(args),
         Command::Mutants(args) => commands::mutants::mutants(args),
+        Command::LabelMutant(args) => commands::mutants::label_mutant(args),
         Command::Fuzz(args) => commands::fuzz::fuzz(args),
         Command::Unpinned(args) => commands::unpinned::unpinned(args),
         Command::Feasible(args) => commands::witness::feasible(args),

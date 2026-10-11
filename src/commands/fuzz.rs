@@ -13,25 +13,7 @@ pub(crate) fn fuzz(args: FuzzArgs) -> Result<()> {
         .programs
         .first()
         .ok_or_else(|| eyre!("artifact contains no program"))?;
-    let seed_inputs = match &args.inputs {
-        Some(path) => {
-            let raw = std::fs::read_to_string(path)
-                .wrap_err_with(|| format!("failed to read {}", path.display()))?;
-            let map: std::collections::BTreeMap<String, serde_json::Value> =
-                serde_json::from_str(&raw)?;
-            let mut values = certify::WitnessValues::new();
-            for (key, value) in map {
-                let index: u32 = key.trim_start_matches('w').parse()?;
-                let text = match value {
-                    serde_json::Value::String(text) => text,
-                    other => other.to_string(),
-                };
-                values.insert(index, crate::field::parse_decimal(&text));
-            }
-            Some(values)
-        }
-        None => None,
-    };
+    let seed_inputs = args.inputs.as_deref().map(read_inputs).transpose()?;
     let report = fuzz::fuzz(
         &program.program,
         program.abi.as_ref(),
@@ -114,4 +96,22 @@ pub(crate) fn fuzz(args: FuzzArgs) -> Result<()> {
     } else {
         std::process::exit(1)
     }
+}
+
+/// A JSON object mapping parameter witness index (`"3"` or `"w3"`) to a
+/// decimal value, as `witness-inputs` prints it.
+pub(crate) fn read_inputs(path: &std::path::Path) -> Result<certify::WitnessValues> {
+    let raw = std::fs::read_to_string(path)
+        .wrap_err_with(|| format!("failed to read {}", path.display()))?;
+    let map: std::collections::BTreeMap<String, serde_json::Value> = serde_json::from_str(&raw)?;
+    let mut values = certify::WitnessValues::new();
+    for (key, value) in map {
+        let index: u32 = key.trim_start_matches('w').parse()?;
+        let text = match value {
+            serde_json::Value::String(text) => text,
+            other => other.to_string(),
+        };
+        values.insert(index, crate::field::parse_decimal(&text));
+    }
+    Ok(values)
 }
