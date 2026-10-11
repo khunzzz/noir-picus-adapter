@@ -41,6 +41,14 @@ pub(crate) enum Command {
     /// seven generated programs never produces an honest witness.
     Unpinned(UnpinnedArgs),
 
+    /// Write circuit mutants: copies of the artifact with one check removed
+    /// or relaxed, the way real under-constraint bugs weaken circuits.
+    ///
+    /// Each mutant still executes on the original honest inputs. A manifest,
+    /// `mutants.tsv`, records the operator, bug class and mutated opcode of
+    /// each; it is appended to, so several artifacts can share one directory.
+    Mutants(MutantsArgs),
+
     /// Ask whether the constraint system accepts a given input assignment.
     Feasible(FeasibleArgs),
 
@@ -81,6 +89,20 @@ pub(crate) struct WitnessInputsArgs {
 
     #[arg(long)]
     pub(crate) witness: PathBuf,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct MutantsArgs {
+    /// The compiled artifact to mutate (its `main`).
+    pub(crate) artifact: PathBuf,
+
+    /// Directory for the mutant artifacts and `mutants.tsv`.
+    #[arg(long)]
+    pub(crate) out: PathBuf,
+
+    /// Most mutants to keep per bug class, spread evenly over the circuit.
+    #[arg(long, default_value_t = 40)]
+    pub(crate) max_per_class: usize,
 }
 
 #[derive(Debug, Args)]

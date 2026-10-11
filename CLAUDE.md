@@ -64,7 +64,7 @@ cargo run -- scan examples/artifacts/unsafe_division_hint \
 
 Main subcommands: `scan` (SMT uniqueness) and `fuzz` (dynamic search for a
 second accepting witness, no witness file needed); also `mutate`, `unpinned`,
-`feasible`, `witness-inputs`, `check-witness` (all in `src/lib.rs`).
+`feasible`, `witness-inputs`, `check-witness`, `mutants` (all in `src/lib.rs`).
 
 | Flag | Values | Default | Meaning |
 | --- | --- | --- | --- |
@@ -95,6 +95,7 @@ second accepting witness, no witness file needed); also `mutate`, `unpinned`,
 | `refine.rs` + `refine/window.rs` | Decide/propagate loop: small local windows whose `UNSAT` proves a wire unique and feeds propagation (the QED²/DPVL idea, on ACIR). With cvc5-ff each window is solved natively (only its own wires, `ff-solver=split`) in a hidden `solve-window` child process killed on a hard deadline, because cvc5's `tlimit` is advisory. |
 | `solver.rs` | Build the `UniquenessQuery`, short-circuit trivially-verified targets, run the Picus backend, optional SMT dump, map `SolverResult`→`TargetReport`. |
 | `report.rs` | Serializable report types (`ScanReport` → `ProgramReport` → `CircuitReport` → `TargetReport`), `TargetStatus` enum, human + JSON printers. |
+| `mutants.rs` | Circuit mutation operators (`drop-check`, `drop-range`, `widen-range`) for the mutation benchmark; every mutant still executes on the original honest inputs. `mutants` subcommand writes sanitized mutant artifacts + `mutants.tsv`. |
 | `field.rs` | `FieldElement` ↔ `BigUint` / decimal conversions and black-box input resolution, shared by the dynamic path. Use these instead of re-deriving them. |
 | `dynamic/` | **Dynamic path.** `concrete` (ACVM execution: black-box evaluation, input repair, Brillig-output override), `certify` (re-check a finding against ACIR opcodes), `candidates` (values to try, circuit structure), `repair` (forward re-derivation of a witness), `mutate` (mutation search), `fuzz` (input generation + hint-override search), `explain` (`unpinned` analysis and finding explanations). |
 
