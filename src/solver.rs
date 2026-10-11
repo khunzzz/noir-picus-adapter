@@ -9,7 +9,7 @@ use picus_smt::{
 };
 
 use crate::{
-    certify::{self, Certificate, CertificateStatus, WitnessValues},
+    dynamic::certify::{self, Certificate, CertificateStatus, WitnessValues},
     report::{Counterexample, DecidedBy, SolverOutcome, TargetReport, TargetStatus, WitnessPair},
     targets::Target,
     translate::{AcirPicusModel, field_modulus, target_signal},
@@ -75,7 +75,6 @@ pub(crate) fn solve_target(
     // over-approximates, so the first `UNSAT` already proves the target unique
     // and the loop stops there — which is what keeps large circuits tractable.
     // A `SAT` is only reported once the slice is exact.
-    let mut refinements = 0;
     let mut depth = 0;
     let outcome = loop {
         let run = run_query(model, target_signal, options, label, depth)?;
@@ -144,12 +143,10 @@ pub(crate) fn solve_target(
             // on the realistic corpus it mostly added a whole extra solver call
             // before the exact query ran anyway, so escalate straight to exact.
             _ => {
-                refinements += 1;
                 depth = usize::MAX;
             }
         }
     };
-    let _ = refinements;
 
     Ok(TargetReport::from_solver(target.clone(), outcome))
 }

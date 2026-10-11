@@ -9,6 +9,12 @@ SOURCE_DIR="$CORPUS_DIR/compiler_regression"
 ARTIFACTS_DIR="$CORPUS_DIR/compiler_regression_artifacts"
 
 NARGO="${NARGO:-/home/said/noir/target/debug/nargo}"
+# An explicit ADAPTER is used as given; only the default debug binary is
+# (re)built here.
+BUILD_ADAPTER=0
+if [[ -z "${ADAPTER:-}" ]]; then
+  BUILD_ADAPTER=1
+fi
 ADAPTER="${ADAPTER:-$ROOT/target/debug/noir-picus-adapter}"
 TIMEOUT_MS="${NOIR_PICUS_TIMEOUT_MS:-3000}"
 SCAN_WALL_TIMEOUT_SEC="${NOIR_PICUS_SCAN_WALL_TIMEOUT_SEC:-30}"
@@ -92,15 +98,16 @@ printf 'case\tcompile_status\tscan_status\texecute_output\treason\n' > "$SUMMARY
 trap cleanup_targets EXIT
 
 command -v jq >/dev/null 2>&1 || fail "jq is required"
-command -v rg >/dev/null 2>&1 || fail "rg is required"
 command -v cargo >/dev/null 2>&1 || fail "cargo is required"
 command -v timeout >/dev/null 2>&1 || fail "coreutils timeout is required"
 require_executable "$NARGO" "nargo"
 
-(
-  cd "$ROOT"
-  cargo build --quiet
-)
+if [[ "$BUILD_ADAPTER" == "1" ]]; then
+  (
+    cd "$ROOT"
+    cargo build --quiet
+  )
+fi
 require_executable "$ADAPTER" "noir-picus-adapter"
 
 assert_header "$MANIFEST" $'case\tartifact\texpected_compile\tscan_fixed\tscan_targets\tscan_solver\tscan_theory\texpected_scan\texpected_execute_output\tsource_family'
@@ -149,7 +156,7 @@ while IFS=$'\t' read -r case artifact expected_compile scan_fixed scan_targets s
   if ! jq -e 'has("noir_version") and has("bytecode") and (keys | length == 2)' "$artifact_path" >/dev/null; then
     fail "$case sanitized artifact has unexpected shape"
   fi
-  if rg -n '/home/said|debug_symbols|file_map|source' "$artifact_path" >/dev/null; then
+  if grep -Eq '/home/said|debug_symbols|file_map|source' "$artifact_path"; then
     fail "$case sanitized artifact contains local paths or debug metadata"
   fi
 

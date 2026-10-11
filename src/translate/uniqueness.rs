@@ -486,7 +486,6 @@ impl Uniqueness {
         }
 
         let modulus = field_modulus();
-        let mut constant = field_to_biguint(expression.q_c);
         let mut unknowns: Vec<(usize, BigUint)> = Vec::new();
         for (coefficient, witness) in &expression.linear_combinations {
             let coeff = field_to_biguint(*coefficient);
@@ -497,7 +496,6 @@ impl Uniqueness {
             if self.is_determined(wire) {
                 // Determined wires contribute a fixed amount; their value is
                 // irrelevant to the uniqueness argument, only their presence.
-                constant = (constant + coeff) % &modulus;
                 continue;
             }
             match unknowns.iter_mut().find(|(existing, _)| *existing == wire) {
@@ -505,8 +503,6 @@ impl Uniqueness {
                 None => unknowns.push((wire, coeff)),
             }
         }
-        let _ = constant;
-
         if unknowns.len() != 2 {
             return false;
         }

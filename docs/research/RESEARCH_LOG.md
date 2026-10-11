@@ -4056,7 +4056,7 @@ at compile time`. Разобрано: это ИЗВЕСТНОЕ ограниче
 
 ## Итерация 82 — реальная цель из research_notes: Interfold (Gnosis Guild)
 
-**Выбор.** Из рейтинга в `research_notes/.../real_world_noir_targets.md` взят
+**Выбор.** Из рейтинга в `docs/research/noir-bug-directions/real_world_noir_targets.md` взят
 пункт 2: схемы Interfold не покрыты аудитами («covers no circuits») и построены на
 рукописной модульной арифметике с подсказками. Решающий практический довод:
 Interfold закрепляет `nargo v1.0.0-beta.26` — ту же ревизию ACIR (`40d6574`),

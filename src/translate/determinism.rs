@@ -1,5 +1,5 @@
 //! The determinism (uninterpreted-function) abstraction for deterministic
-//! black boxes that are not translated exactly (Tier 2, see SOUNDNESS.md).
+//! black boxes that are not translated exactly (Tier 2, see docs/SOUNDNESS.md).
 
 use std::collections::BTreeSet;
 

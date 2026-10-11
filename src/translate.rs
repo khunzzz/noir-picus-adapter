@@ -139,7 +139,7 @@ struct UnsupportedIssue {
 // A deterministic black box that we do not translate exactly, but model with a
 // determinism (uninterpreted-function) abstraction instead of blocking the
 // target. Tracked separately from unsupported issues so we can annotate any
-// target whose verdict depended on the abstraction. See SOUNDNESS.md.
+// target whose verdict depended on the abstraction. See docs/SOUNDNESS.md.
 #[derive(Clone, Debug)]
 struct AbstractionIssue {
     reason: String,
@@ -455,19 +455,11 @@ pub(crate) fn build_model_with_calls(
                 let callee_proved = deterministic_calls.contains(&(id.as_usize() as u32));
                 // Предикат сам по себе может нести свободу, поэтому его сигналы
                 // входят в число входов вызова.
-                let mut input_wires =
-                    inputs.iter().copied().map(picus_wire).collect::<Vec<_>>();
+                let mut input_wires = inputs.iter().copied().map(picus_wire).collect::<Vec<_>>();
                 input_wires.extend(expression_wires(predicate));
-                let output_wires =
-                    outputs.iter().copied().map(picus_wire).collect::<Vec<_>>();
+                let output_wires = outputs.iter().copied().map(picus_wire).collect::<Vec<_>>();
                 match callee_proved
-                    .then(|| {
-                        call_determinism_group(
-                            input_wires,
-                            output_wires,
-                            &input_indices,
-                        )
-                    })
+                    .then(|| call_determinism_group(input_wires, output_wires, &input_indices))
                     .flatten()
                 {
                     Some((wires, orig)) => {
@@ -566,7 +558,7 @@ impl AcirPicusModel {
 
     /// Determinism-abstraction issues that lie in this target's cone. A verdict
     /// for such a target is computed under the abstraction: `verified` stays
-    /// sound, but `unsafe` may be spurious (see SOUNDNESS.md). The caller
+    /// sound, but `unsafe` may be spurious (see docs/SOUNDNESS.md). The caller
     /// surfaces these as caveats rather than blocking the scan.
     pub(crate) fn abstraction_reasons_for_target(&self, target: Witness) -> Vec<String> {
         let component = self.dependency_component(target_signal(target));
@@ -597,7 +589,7 @@ impl AcirPicusModel {
     /// pulling the constraints that *define* those wires back in. The sequence
     /// is monotone and reaches the exact query in finitely many steps.
     ///
-    /// Soundness (see SOUNDNESS.md). Every level is an over-approximation:
+    /// Soundness (see docs/SOUNDNESS.md). Every level is an over-approximation:
     /// dropping constraints only adds solutions, and the `x_s = y_s`
     /// equalities are implied by the real system, so they remove none. Hence
     /// `UNSAT` at *any* level already proves the target unique. `SAT` proves
