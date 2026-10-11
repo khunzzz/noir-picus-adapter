@@ -85,6 +85,17 @@ pub(crate) struct AcirPicusModel {
     unsupported_issues: Vec<UnsupportedIssue>,
     abstracted_issues: Vec<AbstractionIssue>,
     dependency_edges: Vec<Vec<usize>>,
+    /// Wire -> the dependency edges and constraint groups that mention it,
+    /// built on first use. Without it every local window rescanned every edge
+    /// and every group, and refinement spent its whole budget building
+    /// windows: on a 50k-opcode circuit it issued six queries in two minutes.
+    wire_index: std::sync::OnceLock<WireIndex>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct WireIndex {
+    edges_of: HashMap<usize, Vec<usize>>,
+    groups_of: HashMap<usize, Vec<usize>>,
 }
 
 /// One sliced per-target query plus whether the slice is already exact.
@@ -527,10 +538,34 @@ pub(crate) fn build_model_with_calls(
         unsupported_issues,
         abstracted_issues,
         dependency_edges,
+        wire_index: std::sync::OnceLock::new(),
     }
 }
 
 impl AcirPicusModel {
+    fn wire_index(&self) -> &WireIndex {
+        self.wire_index.get_or_init(|| {
+            let mut index = WireIndex::default();
+            for (position, edge) in self.dependency_edges.iter().enumerate() {
+                for wire in edge {
+                    let list = index.edges_of.entry(*wire).or_default();
+                    if list.last() != Some(&position) {
+                        list.push(position);
+                    }
+                }
+            }
+            for (position, group) in self.constraint_groups.iter().enumerate() {
+                for wire in &group.wires {
+                    let list = index.groups_of.entry(*wire).or_default();
+                    if list.last() != Some(&position) {
+                        list.push(position);
+                    }
+                }
+            }
+            index
+        })
+    }
+
     pub(crate) fn is_fixed_known_signal(&self, signal: usize) -> bool {
         self.fixed_known_signals.contains(&signal)
     }
@@ -609,10 +644,15 @@ impl AcirPicusModel {
         let mut alt = Vec::new();
         let mut pinned = BTreeSet::new();
 
-        for group in self
-            .constraint_groups
+        // Groups touching the component, in their original order.
+        let index = self.wire_index();
+        let touching = component
             .iter()
-            .filter(|group| group.wires.iter().any(|wire| component.contains(wire)))
+            .flat_map(|wire| index.groups_of.get(wire).into_iter().flatten().copied())
+            .collect::<BTreeSet<usize>>();
+        for group in touching
+            .into_iter()
+            .map(|position| &self.constraint_groups[position])
             .chain(&self.global_groups)
         {
             orig.extend(
@@ -669,30 +709,34 @@ impl AcirPicusModel {
     /// milliseconds.
     pub(crate) fn local_window(&self, target: Witness, radius: usize) -> SlicedQuery {
         let signal = target_signal(target);
+        let is_cut = |wire: usize| {
+            wire != signal
+                && (wire == 0
+                    || self.constant_signals.contains_key(&wire)
+                    || self.fixed_known_signals.contains(&wire))
+        };
 
-        let mut cut = BTreeSet::new();
-        cut.insert(0);
-        cut.extend(self.constant_signals.keys().copied());
-        cut.extend(self.fixed_known_signals.iter().copied());
-        cut.remove(&signal);
-
+        // Breadth-first over the wire index: each round adds every uncut wire
+        // of every edge that touches a wire added in the previous round, which
+        // is the same set the full rescan per round produced.
+        let index = self.wire_index();
         let mut window = BTreeSet::from([signal]);
+        let mut frontier = vec![signal];
         for _ in 0..radius {
-            let mut grown = window.clone();
-            for edge in &self.dependency_edges {
-                if !edge.iter().any(|wire| window.contains(wire)) {
-                    continue;
-                }
-                for wire in edge {
-                    if !cut.contains(wire) {
-                        grown.insert(*wire);
+            let mut next = Vec::new();
+            for wire in &frontier {
+                for &edge in index.edges_of.get(wire).into_iter().flatten() {
+                    for &other in &self.dependency_edges[edge] {
+                        if !is_cut(other) && window.insert(other) {
+                            next.push(other);
+                        }
                     }
                 }
             }
-            if grown == window {
+            if next.is_empty() {
                 break;
             }
-            window = grown;
+            frontier = next;
         }
 
         self.collect_groups(&window)
