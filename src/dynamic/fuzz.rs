@@ -55,6 +55,19 @@ pub(crate) struct FuzzFinding {
     pub(crate) inputs: BTreeMap<u32, String>,
     pub(crate) certificate: String,
     pub(crate) checked_opcodes: usize,
+    /// Every witness whose value differs between the two assignments. Each
+    /// of them is provably not determined by the parameters, which is what
+    /// makes a finding usable as an oracle against the static path.
+    pub(crate) moved: Vec<u32>,
+}
+
+/// Witnesses that differ between two assignments.
+fn moved_witnesses(honest: &WitnessValues, alternative: &WitnessValues) -> Vec<u32> {
+    alternative
+        .iter()
+        .filter(|(index, value)| honest.get(index) != Some(*value))
+        .map(|(index, _)| *index)
+        .collect()
 }
 
 #[derive(Debug, Default, Serialize)]
@@ -631,6 +644,7 @@ pub(crate) fn fuzz(
                     .collect(),
                 certificate: format!("{:?}", certificate.status),
                 checked_opcodes: certificate.checked_opcodes,
+                moved: moved_witnesses(&honest, &alternative),
             });
         }
         if options.stop_at_first && !report.findings.is_empty() {
@@ -829,6 +843,7 @@ pub(crate) fn override_search(
                     .collect(),
                 certificate: format!("{:?}", certificate.status),
                 checked_opcodes: certificate.checked_opcodes,
+                moved: moved_witnesses(honest, &alternative),
             });
             break;
         }

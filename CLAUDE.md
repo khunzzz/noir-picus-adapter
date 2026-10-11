@@ -92,7 +92,7 @@ second accepting witness, no witness file needed); also `mutate`, `unpinned`,
 | `debug_info.rs` | ABI and debug-symbol parsing; witness → name / source location. |
 | `targets.rs` | Discover target witnesses: return values and `BrilligCall` outputs (`Simple`/`Array`), tagged with `TargetOrigin`. |
 | `translate.rs` + `translate/` | **Static path core.** ACIR→Picus IR translation. The root module owns `AcirPicusModel`, the `build_model` per-opcode driver, layered cone slicing (`target_constraints_at`) and unsupported-opcode tracking. Per-opcode emission lives in submodules: `expr` (AssertZero), `range`, `bitwise` (AND/XOR), `memory`, `determinism` (Tier-2 abstraction + the functional-blackbox allow-list), `uniqueness` (uniqueness-propagation lemmas), `known` (constant propagation), `ir` (wire mapping / `var_name` / coefficient helpers), `wires` (wire enumeration). Tests: `translate/tests.rs` (IR shape), `translate/uniqueness.rs` (lemma tests) and `translate/soundness_tests.rs` (differential, solution sets). |
-| `refine.rs` | Decide/propagate loop: small local windows whose `UNSAT` proves a wire unique and feeds propagation (the QED²/DPVL idea, on ACIR). |
+| `refine.rs` + `refine/window.rs` | Decide/propagate loop: small local windows whose `UNSAT` proves a wire unique and feeds propagation (the QED²/DPVL idea, on ACIR). With cvc5-ff each window is solved natively (only its own wires, `ff-solver=split`) in a hidden `solve-window` child process killed on a hard deadline, because cvc5's `tlimit` is advisory. |
 | `solver.rs` | Build the `UniquenessQuery`, short-circuit trivially-verified targets, run the Picus backend, optional SMT dump, map `SolverResult`→`TargetReport`. |
 | `report.rs` | Serializable report types (`ScanReport` → `ProgramReport` → `CircuitReport` → `TargetReport`), `TargetStatus` enum, human + JSON printers. |
 | `field.rs` | `FieldElement` ↔ `BigUint` / decimal conversions and black-box input resolution, shared by the dynamic path. Use these instead of re-deriving them. |
@@ -182,6 +182,11 @@ The default path is hardcoded to a developer machine — override it via env:
 ```bash
 NARGO=/path/to/noir/target/debug/nargo bash corpus/check_corpus.sh
 ```
+
+Diagnostics env vars (not CLI flags): `NOIR_PICUS_LEMMAS` (`all`/`none`/comma list
+of `single,euclid,condzero,blackbox`) restricts propagation lemmas for ablation;
+`NOIR_PICUS_DUMP_DETERMINED=<path>` makes `scan` write the determined witness set
+per circuit; `fuzz --format json` findings carry `moved` (every witness that differs).
 
 Useful env overrides: `NARGO`, `ADAPTER` (defaults to
 `target/debug/noir-picus-adapter` — build first), `NOIR_PICUS_TIMEOUT_MS`,

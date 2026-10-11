@@ -4,7 +4,7 @@
 use std::collections::{BTreeSet, HashSet};
 
 use acir::{FieldElement, circuit::Circuit, circuit::Opcode};
-use color_eyre::eyre::{Result, eyre};
+use color_eyre::eyre::{Context, Result, eyre};
 
 use crate::cli::*;
 use crate::debug_info::{AbiNaming, ProgramDebugData};
@@ -64,6 +64,20 @@ pub(crate) fn scan(args: ScanArgs) -> Result<()> {
                     model.mark_determined(wire);
                     refinement.proved += 1;
                 }
+            }
+            // Research hook: the full set the static path calls determined,
+            // after propagation and refinement. Cross-checked against
+            // certified dynamic findings, which must never land in it.
+            if let Some(path) = std::env::var_os("NOIR_PICUS_DUMP_DETERMINED") {
+                let determined = (1..model.witness_wire_limit)
+                    .filter(|wire| model.fixed_known_signals.contains(wire))
+                    .map(|wire| (wire - 1).to_string())
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                let path = std::path::PathBuf::from(path)
+                    .with_extension(format!("p{program_index}.c{circuit_index}.txt"));
+                std::fs::write(&path, determined)
+                    .wrap_err_with(|| format!("failed to write {}", path.display()))?;
             }
             let circuit_name = if circuit.function_name.is_empty() {
                 format!("circuit_{circuit_index}")
