@@ -396,6 +396,12 @@ mod tests {
     }
 
     fn solve(orig: Vec<IRConstraint>, alt: Vec<IRConstraint>) -> Option<bool> {
+        // cvc5's finite-field engine (CoCoA) keeps global state and crashes
+        // when two solvers run in one process at once. Production never does
+        // that — each window gets its own process — but the test harness
+        // runs tests on parallel threads.
+        static CVC5: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _guard = CVC5.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         // Encode and decode on the way, as the child process would.
         let roundtrip = |constraints: &[IRConstraint]| {
             constraints
