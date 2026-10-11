@@ -114,9 +114,11 @@ def cmd_summarize(args):
     rows = [json.loads(l) for l in open(out / 'results.jsonl')]
 
     def clean(n):
+        # Excluded: originals that already have a certified finding or a
+        # scan `unsafe`; their mutants cannot be told apart from them.
         b = base.get(n)
-        return b and not b['fuzz']['certified'] and not b['scan']['error'] and b['scan']['targets'] \
-            and all(t['status'] == 'verified' for t in b['scan']['targets'])
+        return b and not b['fuzz']['certified'] and not b['scan']['error'] \
+            and not any(t['status'] == 'unsafe' for t in b['scan']['targets'])
 
     excluded = collections.Counter()
     kept = []
@@ -124,7 +126,7 @@ def cmd_summarize(args):
         if 'error' in r['label']:
             excluded['label error (fold, rejected inputs)'] += 1
         elif not clean(r['name']):
-            excluded['original not verified-clean'] += 1
+            excluded['original already flagged or scan error'] += 1
         elif r['label'].get('baseline_nondet'):
             excluded['original non-unique on these inputs'] += 1
         else:
@@ -132,12 +134,16 @@ def cmd_summarize(args):
 
     def scan_says(r):
         ts = r['scan']['targets']
-        if r['scan']['error'] or not ts:
+        if r['scan']['error']:
             return 'error'
+        if not ts:
+            return 'no-outputs'
         st = {t['status'] for t in ts}
         return 'unsafe' if 'unsafe' in st else 'verified' if st == {'verified'} else 'unknown'
 
-    print(f'mutants: {len(rows)}, kept: {len(kept)}, excluded: {dict(excluded)}\n')
+    print(f'mutants: {len(rows)}, kept: {len(kept)}, excluded: {dict(excluded)}')
+    with_outputs = sum(1 for r in kept if r['scan']['targets'])
+    print(f'kept mutants whose program has public outputs: {with_outputs}\n')
     labels = ['nondet', 'over-accept', 'internal', 'no-weakening']
     classes = sorted({r['class'] for r in kept})
     print('labels by class')
@@ -153,29 +159,39 @@ def cmd_summarize(args):
             continue
         sc = collections.Counter(scan_says(r) for r in sub)
         fz = sum(1 for r in sub if r['fuzz']['certified'])
-        print(f'{l:14} n={len(sub):5}  scan {dict(sc)}  fuzz-certified {fz}')
+        where = collections.Counter(r['label'].get('nondet_inputs') for r in sub if l == 'nondet')
+        print(f'{l:14} n={len(sub):5}  scan {dict(sc)}  fuzz-certified {fz}' + (f'  inputs {dict(where)}' if where else ''))
 
-    nondet = [r for r in kept if r['label']['label'] == 'nondet']
+    # Pooled ground truth: any certified pair is a real nondet bug, whoever
+    # found it — the labeller, fuzz, or a scan counterexample re-checked
+    # against ACIR. Recall is relative to that pool.
+    scan_cert = lambda r: any(t['status'] == 'unsafe' and t['cert'] == 'Certified' for t in r['scan']['targets'])
+    nondet = [r for r in kept if r['label']['label'] == 'nondet' and r['label'].get('certificate') == 'Certified'
+              or r['fuzz']['certified'] or scan_cert(r)]
+    print(f'\npooled certified nondet: {len(nondet)} (labeller {sum(r["label"]["label"] == "nondet" for r in nondet)}, '
+          f'fuzz {sum(bool(r["fuzz"]["certified"]) for r in nondet)}, scan-certified {sum(scan_cert(r) for r in nondet)})')
     violations = []
     for r in nondet:
-        moved = {o[0] for o in r['label'].get('moved_outputs', [])}
-        if r['label'].get('certificate') != 'Certified':
-            continue
+        moved = {o[0] for o in r['label'].get('moved_outputs', [])} | set(r['fuzz']['returns'])
         for t in r['scan']['targets']:
             if t['w'] in moved and t['status'] == 'verified':
                 violations.append((r['mutant'], t['w'], t['by']))
-    print(f'\nsoundness: {len(violations)} certified-nondet output(s) reported verified by scan')
+    print(f'soundness: {len(violations)} certified-nondet output(s) reported verified by scan')
     for v in violations[:20]:
         print('  ', *v)
 
-    print('\nrecall on nondet, by class: scan unsafe / fuzz / either')
-    for c in classes:
-        sub = [r for r in nondet if r['class'] == c]
+    print('\nrecall on pooled nondet, by class: labeller / scan unsafe / fuzz / scan or fuzz')
+    for c in classes + ['ALL']:
+        sub = [r for r in nondet if c == 'ALL' or r['class'] == c]
         if sub:
-            s = sum(scan_says(r) == 'unsafe' for r in sub)
+            l = sum(r['label']['label'] == 'nondet' for r in sub)
+            s_ = sum(scan_says(r) == 'unsafe' for r in sub)
             f = sum(bool(r['fuzz']['certified']) for r in sub)
             e = sum(scan_says(r) == 'unsafe' or bool(r['fuzz']['certified']) for r in sub)
-            print(f'  {c:18} n={len(sub):4}  scan {s:4}  fuzz {f:4}  either {e:4}')
+            print(f'  {c:18} n={len(sub):4}  label {l:4}  scan {s_:4}  fuzz {f:4}  either {e:4}')
+    print('scan verdict on pooled nondet:', dict(collections.Counter(scan_says(r) for r in nondet)))
+    print('scan deciding stage on pooled nondet unsafe:',
+          dict(collections.Counter(t['by'] for r in nondet for t in r['scan']['targets'] if t['status'] == 'unsafe')))
     sub = [r for r in kept if scan_says(r) == 'unsafe' and r['label']['label'] != 'nondet']
     print(f'\nscan unsafe without a nondet label: {len(sub)} '
           f'(by label {dict(collections.Counter(r["label"]["label"] for r in sub))}; '
