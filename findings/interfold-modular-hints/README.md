@@ -1,6 +1,6 @@
 # Interfold (Gnosis Guild): модульная арифметика на подсказках — первый проход
 
-Цель выбрана по `research_notes/Направления поиска багов Noir/real_world_noir_targets.md`
+Цель выбрана по `docs/research/noir-bug-directions/real_world_noir_targets.md`
 (пункт 2 рейтинга: «unaudited + hint-heavy + holds value»). Опубликованные
 аудиты Interfold (Zenith, 2026) прямо говорят: «It covers no Rust and no
 circuits». Как выяснилось позже, схемы всё же проходили внешний аудит
@@ -189,7 +189,7 @@ C7 — единственная боевая схема с содержател�
 (логика по коэффициентам одинакова). Два варианта: `c7_decode` (id — входы,
 194 опкода ACIR) и `c7_ids` (id = `[1, 2]` константой, 110 опкодов).
 
-Положительный контроль (защита от пустого результата, см. RESEARCH_LOG):
+Положительный контроль (защита от пустого результата, см. docs/research/RESEARCH_LOG.md):
 `mut_garner.patch` — убрана граница частного в `reduce_mod_bounded`
 (остаток становится свободным); `mut_rounded.patch` — в `rounded_decode`
 верхняя граница остатка заменена битовой `< 2^72` при `Q ≈ 2^72 − 2^54.3`

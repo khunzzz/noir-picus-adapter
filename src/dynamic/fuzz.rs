@@ -28,8 +28,9 @@ use acir::{
 };
 use serde::Serialize;
 
-use crate::certify::{self, WitnessValues};
-use crate::{concrete, mutate};
+use crate::dynamic::certify::{self, WitnessValues};
+use crate::dynamic::{candidates, concrete, mutate};
+use crate::field::to_decimal;
 
 pub(crate) struct FuzzOptions {
     pub(crate) rounds: usize,
@@ -154,7 +155,7 @@ fn layout(program: &Program<FieldElement>, abi: Option<&crate::debug_info::Abi>)
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect::<Vec<_>>();
-    let widths = mutate::range_widths(circuit);
+    let widths = candidates::range_widths(circuit);
 
     let mut runs: Vec<Vec<u32>> = Vec::new();
     for &param in &params {
@@ -494,8 +495,8 @@ pub(crate) fn fuzz(
     let mut report = FuzzReport::default();
     let mut seen = BTreeSet::new();
     let mut hot: Vec<usize> = Vec::new();
-    let indexed = mutate::index_candidates(circuit);
-    let widths = mutate::range_widths(circuit);
+    let indexed = candidates::index_candidates(circuit);
+    let widths = candidates::range_widths(circuit);
 
     for round in 0..options.rounds {
         if Instant::now() >= deadline {
@@ -590,7 +591,7 @@ pub(crate) fn fuzz(
             };
             let alternative: WitnessValues = assignment
                 .iter()
-                .map(|(index, value)| (*index, parse_decimal(value)))
+                .map(|(index, value)| (*index, crate::field::parse_decimal(value)))
                 .collect();
             // Independent re-check of the full claim: same parameters, a
             // return value differs, both assignments satisfy every opcode.
@@ -618,15 +619,15 @@ pub(crate) fn fuzz(
                         (
                             *index,
                             (
-                                canonical(honest[index]),
-                                canonical(alternative.get(index).copied().unwrap_or_default()),
+                                to_decimal(honest[index]),
+                                to_decimal(alternative.get(index).copied().unwrap_or_default()),
                             ),
                         )
                     })
                     .collect(),
                 inputs: params
                     .iter()
-                    .map(|index| (*index, canonical(honest[index])))
+                    .map(|index| (*index, to_decimal(honest[index])))
                     .collect(),
                 certificate: format!("{:?}", certificate.status),
                 checked_opcodes: certificate.checked_opcodes,
@@ -638,12 +639,6 @@ pub(crate) fn fuzz(
     }
     report.elapsed_ms = started.elapsed().as_millis();
     report
-}
-
-pub(crate) fn parse_decimal(value: &str) -> FieldElement {
-    num_bigint::BigUint::parse_bytes(value.trim().as_bytes(), 10)
-        .map(|big| FieldElement::from_be_bytes_reduce(&big.to_bytes_be()))
-        .unwrap_or_default()
 }
 
 /// Try every candidate value for every hint, each in a fresh run with that one
@@ -660,11 +655,11 @@ pub(crate) fn override_search(
     seen: &mut BTreeSet<u32>,
 ) -> (Vec<FuzzFinding>, usize) {
     let circuit = &program.functions[0];
-    let returns = mutate::public_outputs(circuit);
-    let indexed = mutate::index_candidates(circuit);
-    let wraps = mutate::wrap_candidates(circuit);
-    let widths = mutate::range_widths(circuit);
-    let mut hints = mutate::hint_witnesses(circuit)
+    let returns = candidates::public_outputs(circuit);
+    let indexed = candidates::index_candidates(circuit);
+    let wraps = candidates::wrap_candidates(circuit);
+    let widths = candidates::range_widths(circuit);
+    let mut hints = candidates::hint_witnesses(circuit)
         .into_iter()
         .filter(|hint| !params.contains(hint))
         .collect::<Vec<_>>();
@@ -712,7 +707,7 @@ pub(crate) fn override_search(
         let Some(original) = honest.get(&hint).copied() else {
             continue;
         };
-        let mut values = mutate::candidate_values(original, attempts);
+        let mut values = candidates::candidate_values(original, attempts);
         values.extend((2u128..=8).map(FieldElement::from));
         if position_like(&hint) {
             // Try the slots that look like the honest one first. A hint that
@@ -814,23 +809,23 @@ pub(crate) fn override_search(
             findings.push(FuzzFinding {
                 round,
                 hint,
-                hint_honest: canonical(original),
-                hint_alternative: canonical(value),
+                hint_honest: to_decimal(original),
+                hint_alternative: to_decimal(value),
                 returns: diverging
                     .iter()
                     .map(|index| {
                         (
                             *index,
                             (
-                                canonical(honest[index]),
-                                canonical(alternative.get(index).copied().unwrap_or_default()),
+                                to_decimal(honest[index]),
+                                to_decimal(alternative.get(index).copied().unwrap_or_default()),
                             ),
                         )
                     })
                     .collect(),
                 inputs: params
                     .iter()
-                    .map(|index| (*index, canonical(honest[index])))
+                    .map(|index| (*index, to_decimal(honest[index])))
                     .collect(),
                 certificate: format!("{:?}", certificate.status),
                 checked_opcodes: certificate.checked_opcodes,
@@ -839,10 +834,6 @@ pub(crate) fn override_search(
         }
     }
     (findings, tried)
-}
-
-fn canonical(value: FieldElement) -> String {
-    num_bigint::BigUint::from_bytes_be(&value.to_be_bytes()).to_string()
 }
 
 struct TraceOnDrop(bool, u32, usize, Instant, bool);
