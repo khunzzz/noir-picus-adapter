@@ -30,6 +30,12 @@ pub fn run() -> Result<()> {
     color_eyre::install()?;
 
     let cli = Cli::parse();
+    if matches!(
+        cli.command,
+        Command::ScanTarget(_) | Command::RefineCircuit(_) | Command::SolveWindow
+    ) {
+        commands::exit_with_parent();
+    }
     match cli.command {
         Command::Scan(args) => commands::scan::scan(args),
         Command::ScanTarget(args) => commands::scan::scan_one_target(args),
