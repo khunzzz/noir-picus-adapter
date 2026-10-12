@@ -165,7 +165,7 @@ def cmd_summarize(args):
     # Pooled ground truth: any certified pair is a real nondet bug, whoever
     # found it — the labeller, fuzz, or a scan counterexample re-checked
     # against ACIR. Recall is relative to that pool.
-    scan_cert = lambda r: any(t['status'] == 'unsafe' and t['cert'] == 'Certified' for t in r['scan']['targets'])
+    scan_cert = lambda r: any(t['status'] == 'unsafe' and (t['cert'] or '').lower() == 'certified' for t in r['scan']['targets'])
     nondet = [r for r in kept if r['label']['label'] == 'nondet' and r['label'].get('certificate') == 'Certified'
               or r['fuzz']['certified'] or scan_cert(r)]
     print(f'\npooled certified nondet: {len(nondet)} (labeller {sum(r["label"]["label"] == "nondet" for r in nondet)}, '

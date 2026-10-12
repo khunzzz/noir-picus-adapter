@@ -11,10 +11,11 @@
 //! time limit (`tlimit` is only checked between search steps).
 //!
 //! Here only the wires the window mentions are declared, only their
-//! determined-wire equalities are asserted, no model is requested, and the
-//! field engine is cvc5's split Gröbner basis (`ff-solver=split`), which
-//! separates the linear and bit-sum parts of the ideal. It decides the same
-//! formula, so `UNSAT` means the same thing; only the cost changes.
+//! determined-wire equalities are asserted, and no model is requested. The
+//! window goes first to cvc5's split Gröbner engine (`ff-solver=split`), which
+//! rejects the usual satisfiable window far faster; an `UNSAT` from it is only
+//! accepted once the default engine agrees (see `is_unique`: the split engine
+//! is not sound in cvc5 1.3.1).
 //!
 //! Neither engine honours its time limit reliably: the split engine recurses
 //! through fresh Gröbner bases, each with its own budget. So every query runs
@@ -233,11 +234,26 @@ impl Encoded {
 
 /// `Some(true)` on `UNSAT` (the target is unique even in this window),
 /// `Some(false)` on `SAT`, `None` when cvc5 gave up.
+///
+/// The split engine is fast but not trusted with a proof: cvc5 1.3.1's
+/// `ff-solver=split` answers `UNSAT` on satisfiable windows (the fixture
+/// `split_gb_false_unsat.json` is one, found by the mutation benchmark, where
+/// it let `scan` call a certified-nondet output `verified`). Its `SAT` only
+/// ever leaves a wire undetermined, so it is used to reject quickly, and every
+/// `UNSAT` it reports is re-decided by the default Gröbner-basis engine, the
+/// one Picus relies on.
 fn is_unique(window: &Window, timeout_ms: u64) -> Option<bool> {
+    match decide(window, timeout_ms, "split") {
+        Some(true) => decide(window, timeout_ms, "gb"),
+        other => other,
+    }
+}
+
+fn decide(window: &Window, timeout_ms: u64, engine: &str) -> Option<bool> {
     let tm = cvc5_ff::TermManager::new();
     let mut solver = cvc5_ff::Solver::new(&tm);
     solver.set_logic("QF_FF");
-    solver.set_option("ff-solver", "split");
+    solver.set_option("ff-solver", engine);
     solver.set_option("tlimit", &timeout_ms.to_string());
     let field = tm.mk_ff_sort(&window.prime.to_string(), 10);
 
@@ -388,6 +404,12 @@ fn build<'tm>(
 mod tests {
     use super::*;
 
+    // cvc5's finite-field engine (CoCoA) keeps global state and crashes when
+    // two solvers run in one process at once. Production never does that —
+    // each window gets its own process — but the test harness runs tests on
+    // parallel threads, so every test here takes this lock.
+    static CVC5: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     fn term(coeff: BigUint, var: &str) -> IRTerm {
         IRTerm {
             coeff,
@@ -396,11 +418,6 @@ mod tests {
     }
 
     fn solve(orig: Vec<IRConstraint>, alt: Vec<IRConstraint>) -> Option<bool> {
-        // cvc5's finite-field engine (CoCoA) keeps global state and crashes
-        // when two solvers run in one process at once. Production never does
-        // that — each window gets its own process — but the test harness
-        // runs tests on parallel threads.
-        static CVC5: std::sync::Mutex<()> = std::sync::Mutex::new(());
         let _guard = CVC5.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         // Encode and decode on the way, as the child process would.
         let roundtrip = |constraints: &[IRConstraint]| {
@@ -453,5 +470,37 @@ mod tests {
             rhs_terms: vec![term(BigUint::from(1u8), "x1")],
         };
         assert_eq!(solve(vec![copy("x2")], vec![copy("y2")]), Some(false));
+    }
+
+    // Regression: a satisfiable window (two copies of `w3 = (w0 - w1) * w6 + w1`
+    // with the quotient `w6` free, from a mutant with its `RANGE(w6, 1)`
+    // removed) that cvc5 1.3.1's split engine calls UNSAT. Before the default
+    // engine confirmed every split UNSAT, refinement marked `w3` determined and
+    // `scan` reported a certified-nondet output `verified`.
+    #[test]
+    fn a_split_engine_unsat_is_not_trusted() {
+        let _guard = CVC5.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let request: Request =
+            serde_json::from_str(include_str!("split_gb_false_unsat.json")).unwrap();
+        let decode = |constraints: &[Encoded]| {
+            constraints
+                .iter()
+                .map(|constraint| constraint.decode().unwrap())
+                .collect::<Vec<_>>()
+        };
+        let (orig, alt) = (decode(&request.orig), decode(&request.alt));
+        let prime = crate::translate::field_modulus();
+        let known = request.known.iter().copied().collect();
+        let window = Window {
+            prime: &prime,
+            orig: &orig,
+            alt: &alt,
+            known: &known,
+            target: request.target,
+        };
+        // The bug itself: if this starts failing, cvc5 fixed it.
+        assert_eq!(decide(&window, 5000, "split"), Some(true));
+        assert_eq!(decide(&window, 5000, "gb"), Some(false));
+        assert_eq!(is_unique(&window, 5000), Some(false));
     }
 }
